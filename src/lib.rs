@@ -1,3 +1,14 @@
+// Original implementation Copyright 2013 The Rust Project Developers <https://github.com/rust-lang>
+//
+// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs
+//
+// Additions copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 //! A reimplementation of `std::io::BufReader` with additional methods.
 #![cfg_attr(feature = "nightly", feature(io))]
 
@@ -11,6 +22,7 @@ mod tests;
 const DEFAULT_BUF_SIZE: usize = 64 * 1024;
 const MOVE_THRESHOLD: usize = 1024;
 
+//! A drop-in replacement for `std::io::BufReader` with more functionality.
 pub struct BufReader<R> {
     inner: R,
     buf: Vec<u8>,
@@ -18,11 +30,18 @@ pub struct BufReader<R> {
     cap: usize,
 }
 
-impl<R> BufReader<R> { 
+impl<R> BufReader<R> {
+    /// Create a new `BufReader` wrapping `inner`, with a buffer of a
+    /// default capacity.
     pub fn new(inner: R) -> Self {
         BufReader::with_capacity(DEFAULT_BUF_SIZE, inner)
     }
 
+    /// Create a new `BufReader` wrapping `inner` with a capacity
+    /// of *at least* `cap` bytes.
+    ///
+    /// The actual capacity of the buffer may vary based on
+    /// implementation details of the buffer's allocator.
     pub fn with_capacity(cap: usize, inner: R) -> Self {
         let mut self_ = BufReader {
             inner: inner,
@@ -49,7 +68,8 @@ impl<R> BufReader<R> {
         let src = self.buf[self.pos..].as_ptr();
         let dest = self.buf.as_mut_ptr();
 
-        // Using unsafe for guaranteed memmove.
+        // Guaranteed lowering to memmove.
+        // FIXME: Replace with a safe implementation when one becomes available.
         unsafe {
             ptr::copy(src, dest, self.cap - self.pos);
         }
@@ -65,11 +85,13 @@ impl<R> BufReader<R> {
     /// This should not be called frequently as each call will incur a 
     /// reallocation and a zeroing of the new memory.
     pub fn grow(&mut self, additional: usize) {
-        // We're not expecting to grow frequently, so power-of-two growth is 
-        // unnecessarily greedy.
+        // We're not expecting to grow frequently, so the power-of-two growth
+        // of `Vec::reserve()` is unnecessarily greedy.
         self.buf.reserve_exact(additional);
+
         // According to reserve_exact(), the allocator can still return more 
-        // memory than requested; we might as well use all of it.
+        // memory than requested; if that's the case, we might as well 
+        // use all of it.
         let additional = cmp::max(additional, self.buf.capacity());
         self.buf.extend(iter::repeat(0).take(additional));
     }
@@ -99,7 +121,8 @@ impl<R> BufReader<R> {
     /// Get a mutable reference to the underlying reader.
     ///
     /// ## Note
-    /// Reading directly from the underlying reader is not recommended.
+    /// Reading directly from the underlying reader is not recommended, as some
+    /// data has likely already been moved into the buffer.
     pub fn get_mut(&mut self) -> &mut R { &mut self.inner }
 
     /// Consumes `self` and returns the inner reader only.
@@ -132,8 +155,8 @@ impl<R> BufReader<R> {
 }
 
 impl<R: Read> BufReader<R> {
-    /// Unconditionally perform a read into the buffer, moving data to make room
-    /// if necessary.
+    /// Unconditionally perform a read into the buffer, calling `.make_room()`
+    /// if appropriate or necessary, as determined by the implementation.
     ///
     /// If the read was successful, returns the number of bytes now available 
     /// in the buffer.
@@ -152,7 +175,7 @@ impl<R: Read> BufReader<R> {
             self.cap += try!(self.inner.read(&mut self.buf[self.cap..]));
         }
 
-        Ok(self.cap)
+        Ok(self.cap - self.pos)
     }
 }
 
@@ -164,6 +187,7 @@ impl<R: Read> Read for BufReader<R> {
         if self.pos == self.cap && buf.len() >= self.buf.len() {
             return self.inner.read(buf);
         }
+
         let nread = {
             let mut rem = try!(self.fill_buf());
             try!(rem.read(buf))

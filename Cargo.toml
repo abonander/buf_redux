@@ -3,4 +3,6 @@ name = "buf_redux"
 version = "0.1.0"
 authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 
+license = "MIT/Apache-2.0"
+
 [dependencies]
