@@ -1,8 +1,12 @@
 //! A reimplementation of `std::io::BufReader` with additional methods.
+#![cfg_attr(feature = "nightly", feature(io))]
 
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::{cmp, fmt, io, iter, ptr};
+
+#[cfg(test)]
+mod tests;
 
 const DEFAULT_BUF_SIZE: usize = 64 * 1024;
 const MOVE_THRESHOLD: usize = 1024;
