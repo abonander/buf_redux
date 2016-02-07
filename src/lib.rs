@@ -40,7 +40,7 @@
 
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, fmt, io, iter, ptr};
+use std::{cmp, fmt, io, ptr};
 
 #[cfg(test)]
 mod tests;
@@ -125,8 +125,8 @@ impl<R> BufReader<R> {
         // According to reserve_exact(), the allocator can still return more 
         // memory than requested; if that's the case, we might as well 
         // use all of it.
-        let additional = cmp::max(additional, self.buf.capacity());
-        self.buf.extend(iter::repeat(0).take(additional));
+        let new_len = self.buf.capacity();
+        self.buf.resize(new_len, 0u8);
     }
 
     // RFC: pub fn shrink(&mut self, new_len: usize) ?
