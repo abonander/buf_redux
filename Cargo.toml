@@ -3,6 +3,14 @@ name = "buf_redux"
 version = "0.1.0"
 authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 
+description = "A drop-in replacement for std::io::BufReader with extra features."
+
+keywords = ["bufread", "io", "buffer"]
+
+documentation = "https://cybergeek94.github.io/buf_redux/buf_redux"
+
+repository = "https://github.com/cybergeek94/buf_redux"
+
 license = "MIT/Apache-2.0"
 
 [dependencies]
