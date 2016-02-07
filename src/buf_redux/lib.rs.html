@@ -343,8 +343,98 @@
 <span id="300">300</span>
 <span id="301">301</span>
 <span id="302">302</span>
+<span id="303">303</span>
+<span id="304">304</span>
+<span id="305">305</span>
+<span id="306">306</span>
+<span id="307">307</span>
+<span id="308">308</span>
+<span id="309">309</span>
+<span id="310">310</span>
+<span id="311">311</span>
+<span id="312">312</span>
+<span id="313">313</span>
+<span id="314">314</span>
+<span id="315">315</span>
+<span id="316">316</span>
+<span id="317">317</span>
+<span id="318">318</span>
+<span id="319">319</span>
+<span id="320">320</span>
+<span id="321">321</span>
+<span id="322">322</span>
+<span id="323">323</span>
+<span id="324">324</span>
+<span id="325">325</span>
+<span id="326">326</span>
+<span id="327">327</span>
+<span id="328">328</span>
+<span id="329">329</span>
+<span id="330">330</span>
+<span id="331">331</span>
+<span id="332">332</span>
+<span id="333">333</span>
+<span id="334">334</span>
+<span id="335">335</span>
+<span id="336">336</span>
+<span id="337">337</span>
+<span id="338">338</span>
+<span id="339">339</span>
+<span id="340">340</span>
+<span id="341">341</span>
+<span id="342">342</span>
+<span id="343">343</span>
+<span id="344">344</span>
+<span id="345">345</span>
+<span id="346">346</span>
+<span id="347">347</span>
+<span id="348">348</span>
+<span id="349">349</span>
+<span id="350">350</span>
+<span id="351">351</span>
+<span id="352">352</span>
+<span id="353">353</span>
+<span id="354">354</span>
+<span id="355">355</span>
 </pre><pre class='rust '>
-<span class='doccomment'>//! A reimplementation of `std::io::BufReader` with additional methods.</span>
+<span class='comment'>// Original implementation Copyright 2013 The Rust Project Developers &lt;https://github.com/rust-lang&gt;</span>
+<span class='comment'>//</span>
+<span class='comment'>// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs</span>
+<span class='comment'>//</span>
+<span class='comment'>// Additions copyright 2016 Austin Bonander &lt;austin.bonander@gmail.com&gt;</span>
+<span class='comment'>//</span>
+<span class='comment'>// Licensed under the Apache License, Version 2.0 &lt;LICENSE-APACHE or</span>
+<span class='comment'>// http://www.apache.org/licenses/LICENSE-2.0&gt; or the MIT license</span>
+<span class='comment'>// &lt;LICENSE-MIT or http://opensource.org/licenses/MIT&gt;, at your</span>
+<span class='comment'>// option. This file may not be copied, modified, or distributed</span>
+<span class='comment'>// except according to those terms.</span>
+<span class='doccomment'>//! A drop-in replacement for `std::io::BufReader` with more functionality.</span>
+<span class='doccomment'>//!</span>
+<span class='doccomment'>//! Features include:</span>
+<span class='doccomment'>//!</span>
+<span class='doccomment'>//! * More direct control over the buffer. Provides methods to:</span>
+<span class='doccomment'>//!     * Access the buffer through an `&amp;`-reference without performing I/O</span>
+<span class='doccomment'>//!     * Force unconditional reads into the buffer</span>
+<span class='doccomment'>//!     * Increase the capacity of the buffer</span>
+<span class='doccomment'>//!     * Get the number of available bytes as well as the total capacity of the buffer</span>
+<span class='doccomment'>//!     * Consume the `BufReader` without losing data</span>
+<span class='doccomment'>//!     * Get inner reader and trimmed buffer with the remaining data</span>
+<span class='doccomment'>//!     * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly</span>
+<span class='doccomment'>//! * More sensible buffering behavior</span>
+<span class='doccomment'>//!     * Data is moved down to the beginning of the buffer when appropriate</span>
+<span class='doccomment'>//!         * Such as when there is more room at the beginning of the buffer than at the end</span>
+<span class='doccomment'>//!     * Exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two</span>
+<span class='doccomment'>//!         * Vec&#39;s behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.</span>
+<span class='doccomment'>//! * Drop-in replacement</span>
+<span class='doccomment'>//!     * Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement as simple as swapping the import of the type.</span>
+<span class='doccomment'>//!</span>
+<span class='doccomment'>//! ```notest</span>
+<span class='doccomment'>//! - use std::io::BufReader;</span>
+<span class='doccomment'>//! + extern crate buf_redux;</span>
+<span class='doccomment'>//! + use buf_redux::BufReader;</span>
+<span class='doccomment'>//! ```</span>
+<span class='doccomment'>//! See the `BufReader` type in this crate for more info.</span>
+
 <span class='attribute'>#<span class='op'>!</span>[<span class='ident'>cfg_attr</span>(<span class='ident'>feature</span> <span class='op'>=</span> <span class='string'>&quot;nightly&quot;</span>, <span class='ident'>feature</span>(<span class='ident'>io</span>))]</span>
 
 <span class='kw'>use</span> <span class='ident'>std</span>::<span class='ident'>io</span>::<span class='ident'>prelude</span>::<span class='op'>*</span>;
@@ -357,6 +447,10 @@
 <span class='kw'>const</span> <span class='ident'>DEFAULT_BUF_SIZE</span>: <span class='ident'>usize</span> <span class='op'>=</span> <span class='number'>64</span> <span class='op'>*</span> <span class='number'>1024</span>;
 <span class='kw'>const</span> <span class='ident'>MOVE_THRESHOLD</span>: <span class='ident'>usize</span> <span class='op'>=</span> <span class='number'>1024</span>;
 
+<span class='doccomment'>/// A drop-in replacement for `std::io::BufReader` with more functionality.</span>
+<span class='doccomment'>///</span>
+<span class='doccomment'>/// Original method names/signatures and implemented traits are left untouched,</span>
+<span class='doccomment'>/// making replacement as simple as swapping the import of the type.</span>
 <span class='kw'>pub</span> <span class='kw'>struct</span> <span class='ident'>BufReader</span><span class='op'>&lt;</span><span class='ident'>R</span><span class='op'>&gt;</span> {
     <span class='ident'>inner</span>: <span class='ident'>R</span>,
     <span class='ident'>buf</span>: <span class='ident'>Vec</span><span class='op'>&lt;</span><span class='ident'>u8</span><span class='op'>&gt;</span>,
@@ -364,11 +458,18 @@
     <span class='ident'>cap</span>: <span class='ident'>usize</span>,
 }
 
-<span class='kw'>impl</span><span class='op'>&lt;</span><span class='ident'>R</span><span class='op'>&gt;</span> <span class='ident'>BufReader</span><span class='op'>&lt;</span><span class='ident'>R</span><span class='op'>&gt;</span> { 
+<span class='kw'>impl</span><span class='op'>&lt;</span><span class='ident'>R</span><span class='op'>&gt;</span> <span class='ident'>BufReader</span><span class='op'>&lt;</span><span class='ident'>R</span><span class='op'>&gt;</span> {
+    <span class='doccomment'>/// Create a new `BufReader` wrapping `inner`, with a buffer of a</span>
+    <span class='doccomment'>/// default capacity.</span>
     <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>new</span>(<span class='ident'>inner</span>: <span class='ident'>R</span>) <span class='op'>-&gt;</span> <span class='kw'>Self</span> {
         <span class='ident'>BufReader</span>::<span class='ident'>with_capacity</span>(<span class='ident'>DEFAULT_BUF_SIZE</span>, <span class='ident'>inner</span>)
     }
 
+    <span class='doccomment'>/// Create a new `BufReader` wrapping `inner` with a capacity</span>
+    <span class='doccomment'>/// of *at least* `cap` bytes.</span>
+    <span class='doccomment'>///</span>
+    <span class='doccomment'>/// The actual capacity of the buffer may vary based on</span>
+    <span class='doccomment'>/// implementation details of the buffer&#39;s allocator.</span>
     <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>with_capacity</span>(<span class='ident'>cap</span>: <span class='ident'>usize</span>, <span class='ident'>inner</span>: <span class='ident'>R</span>) <span class='op'>-&gt;</span> <span class='kw'>Self</span> {
         <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>self_</span> <span class='op'>=</span> <span class='ident'>BufReader</span> {
             <span class='ident'>inner</span>: <span class='ident'>inner</span>,
@@ -395,7 +496,8 @@
         <span class='kw'>let</span> <span class='ident'>src</span> <span class='op'>=</span> <span class='self'>self</span>.<span class='ident'>buf</span>[<span class='self'>self</span>.<span class='ident'>pos</span>..].<span class='ident'>as_ptr</span>();
         <span class='kw'>let</span> <span class='ident'>dest</span> <span class='op'>=</span> <span class='self'>self</span>.<span class='ident'>buf</span>.<span class='ident'>as_mut_ptr</span>();
 
-        <span class='comment'>// Using unsafe for guaranteed memmove.</span>
+        <span class='comment'>// Guaranteed lowering to memmove.</span>
+        <span class='comment'>// FIXME: Replace with a safe implementation when one becomes available.</span>
         <span class='kw'>unsafe</span> {
             <span class='ident'>ptr</span>::<span class='ident'>copy</span>(<span class='ident'>src</span>, <span class='ident'>dest</span>, <span class='self'>self</span>.<span class='ident'>cap</span> <span class='op'>-</span> <span class='self'>self</span>.<span class='ident'>pos</span>);
         }
@@ -411,11 +513,13 @@
     <span class='doccomment'>/// This should not be called frequently as each call will incur a </span>
     <span class='doccomment'>/// reallocation and a zeroing of the new memory.</span>
     <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>grow</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='self'>self</span>, <span class='ident'>additional</span>: <span class='ident'>usize</span>) {
-        <span class='comment'>// We&#39;re not expecting to grow frequently, so power-of-two growth is </span>
-        <span class='comment'>// unnecessarily greedy.</span>
+        <span class='comment'>// We&#39;re not expecting to grow frequently, so the power-of-two growth</span>
+        <span class='comment'>// of `Vec::reserve()` is unnecessarily greedy.</span>
         <span class='self'>self</span>.<span class='ident'>buf</span>.<span class='ident'>reserve_exact</span>(<span class='ident'>additional</span>);
+
         <span class='comment'>// According to reserve_exact(), the allocator can still return more </span>
-        <span class='comment'>// memory than requested; we might as well use all of it.</span>
+        <span class='comment'>// memory than requested; if that&#39;s the case, we might as well </span>
+        <span class='comment'>// use all of it.</span>
         <span class='kw'>let</span> <span class='ident'>additional</span> <span class='op'>=</span> <span class='ident'>cmp</span>::<span class='ident'>max</span>(<span class='ident'>additional</span>, <span class='self'>self</span>.<span class='ident'>buf</span>.<span class='ident'>capacity</span>());
         <span class='self'>self</span>.<span class='ident'>buf</span>.<span class='ident'>extend</span>(<span class='ident'>iter</span>::<span class='ident'>repeat</span>(<span class='number'>0</span>).<span class='ident'>take</span>(<span class='ident'>additional</span>));
     }
@@ -445,7 +549,8 @@
     <span class='doccomment'>/// Get a mutable reference to the underlying reader.</span>
     <span class='doccomment'>///</span>
     <span class='doccomment'>/// ## Note</span>
-    <span class='doccomment'>/// Reading directly from the underlying reader is not recommended.</span>
+    <span class='doccomment'>/// Reading directly from the underlying reader is not recommended, as some</span>
+    <span class='doccomment'>/// data has likely already been moved into the buffer.</span>
     <span class='kw'>pub</span> <span class='kw'>fn</span> <span class='ident'>get_mut</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='self'>self</span>) <span class='op'>-&gt;</span> <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='ident'>R</span> { <span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='self'>self</span>.<span class='ident'>inner</span> }
 
     <span class='doccomment'>/// Consumes `self` and returns the inner reader only.</span>
@@ -478,8 +583,8 @@
 }
 
 <span class='kw'>impl</span><span class='op'>&lt;</span><span class='ident'>R</span>: <span class='ident'>Read</span><span class='op'>&gt;</span> <span class='ident'>BufReader</span><span class='op'>&lt;</span><span class='ident'>R</span><span class='op'>&gt;</span> {
-    <span class='doccomment'>/// Unconditionally perform a read into the buffer, moving data to make room</span>
-    <span class='doccomment'>/// if necessary.</span>
+    <span class='doccomment'>/// Unconditionally perform a read into the buffer, calling `.make_room()`</span>
+    <span class='doccomment'>/// if appropriate or necessary, as determined by the implementation.</span>
     <span class='doccomment'>///</span>
     <span class='doccomment'>/// If the read was successful, returns the number of bytes now available </span>
     <span class='doccomment'>/// in the buffer.</span>
@@ -498,7 +603,7 @@
             <span class='self'>self</span>.<span class='ident'>cap</span> <span class='op'>+=</span> <span class='macro'>try</span><span class='macro'>!</span>(<span class='self'>self</span>.<span class='ident'>inner</span>.<span class='ident'>read</span>(<span class='kw-2'>&amp;</span><span class='kw-2'>mut</span> <span class='self'>self</span>.<span class='ident'>buf</span>[<span class='self'>self</span>.<span class='ident'>cap</span>..]));
         }
 
-        <span class='prelude-val'>Ok</span>(<span class='self'>self</span>.<span class='ident'>cap</span>)
+        <span class='prelude-val'>Ok</span>(<span class='self'>self</span>.<span class='ident'>cap</span> <span class='op'>-</span> <span class='self'>self</span>.<span class='ident'>pos</span>)
     }
 }
 
@@ -510,6 +615,7 @@
         <span class='kw'>if</span> <span class='self'>self</span>.<span class='ident'>pos</span> <span class='op'>==</span> <span class='self'>self</span>.<span class='ident'>cap</span> <span class='op'>&amp;&amp;</span> <span class='ident'>buf</span>.<span class='ident'>len</span>() <span class='op'>&gt;=</span> <span class='self'>self</span>.<span class='ident'>buf</span>.<span class='ident'>len</span>() {
             <span class='kw'>return</span> <span class='self'>self</span>.<span class='ident'>inner</span>.<span class='ident'>read</span>(<span class='ident'>buf</span>);
         }
+
         <span class='kw'>let</span> <span class='ident'>nread</span> <span class='op'>=</span> {
             <span class='kw'>let</span> <span class='kw-2'>mut</span> <span class='ident'>rem</span> <span class='op'>=</span> <span class='macro'>try</span><span class='macro'>!</span>(<span class='self'>self</span>.<span class='ident'>fill_buf</span>());
             <span class='macro'>try</span><span class='macro'>!</span>(<span class='ident'>rem</span>.<span class='ident'>read</span>(<span class='ident'>buf</span>))

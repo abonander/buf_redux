@@ -46,15 +46,58 @@
             <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                 [<span class='inner'>&#x2212;</span>]
             </a>
-        </span><a id='src-0' class='srclink' href='../src/buf_redux/lib.rs.html#1-300' title='goto source code'>[src]</a></span></h1>
-<div class='docblock'><p>A reimplementation of <code>std::io::BufReader</code> with additional methods.</p>
+        </span><a id='src-0' class='srclink' href='../src/buf_redux/lib.rs.html#12-353' title='goto source code'>[src]</a></span></h1>
+<div class='docblock'><p>A drop-in replacement for <code>std::io::BufReader</code> with more functionality.</p>
+
+<p>Features include:</p>
+
+<ul>
+<li>More direct control over the buffer. Provides methods to:
+
+<ul>
+<li>Access the buffer through an <code>&amp;</code>-reference without performing I/O</li>
+<li>Force unconditional reads into the buffer</li>
+<li>Increase the capacity of the buffer</li>
+<li>Get the number of available bytes as well as the total capacity of the buffer</li>
+<li>Consume the <code>BufReader</code> without losing data</li>
+<li>Get inner reader and trimmed buffer with the remaining data</li>
+<li>Get a <code>Read</code> adapter which empties the buffer and then pulls from the inner reader directly</li>
+</ul></li>
+<li>More sensible buffering behavior
+
+<ul>
+<li>Data is moved down to the beginning of the buffer when appropriate
+
+<ul>
+<li>Such as when there is more room at the beginning of the buffer than at the end</li>
+</ul></li>
+<li>Exact allocation instead of leaving it up to <code>Vec</code>, which allocates sizes in powers of two
+
+<ul>
+<li>Vec&#39;s behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.</li>
+</ul></li>
+</ul></li>
+<li>Drop-in replacement
+
+<ul>
+<li>Method names/signatures and implemented traits are unchanged from <code>std::io::BufReader</code>, making replacement as simple as swapping the import of the type.</li>
+</ul></li>
+</ul>
+
+<pre><code class="language-notest">- use std::io::BufReader;
++ extern crate buf_redux;
++ use buf_redux::BufReader;
+</code></pre>
+
+<p>See the <code>BufReader</code> type in this crate for more info.</p>
 </div><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
 <table>
                     <tr class=' module-item'>
                         <td><a class='struct' href='struct.BufReader.html'
                                title='buf_redux::BufReader'>BufReader</a></td>
                         <td class='docblock short'>
-                             
+                             <p>A drop-in replacement for <code>std::io::BufReader</code> with more functionality.</p>
+
                         </td>
                     </tr>
                 

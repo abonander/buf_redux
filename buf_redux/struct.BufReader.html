@@ -46,12 +46,23 @@
             <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                 [<span class='inner'>&#x2212;</span>]
             </a>
-        </span><a id='src-9' class='srclink' href='../src/buf_redux/lib.rs.html#14-19' title='goto source code'>[src]</a></span></h1>
+        </span><a id='src-9' class='srclink' href='../src/buf_redux/lib.rs.html#55-60' title='goto source code'>[src]</a></span></h1>
 <pre class='rust struct'>pub struct BufReader&lt;R&gt; {
     // some fields omitted
-}</pre><h2 id='methods'>Methods</h2><h3 class='impl'><code>impl&lt;R&gt; <a class='struct' href='../buf_redux/struct.BufReader.html' title='buf_redux::BufReader'>BufReader</a>&lt;R&gt;</code></h3><div class='impl-items'><h4 id='method.new' class='method'><code>fn <a href='#method.new' class='fnname'>new</a>(inner: R) -&gt; Self</code></h4>
-<h4 id='method.with_capacity' class='method'><code>fn <a href='#method.with_capacity' class='fnname'>with_capacity</a>(cap: <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.usize.html'>usize</a>, inner: R) -&gt; Self</code></h4>
-<h4 id='method.make_room' class='method'><code>fn <a href='#method.make_room' class='fnname'>make_room</a>(&amp;mut self)</code></h4>
+}</pre><div class='docblock'><p>A drop-in replacement for <code>std::io::BufReader</code> with more functionality.</p>
+
+<p>Original method names/signatures and implemented traits are left untouched,
+making replacement as simple as swapping the import of the type.</p>
+</div><h2 id='methods'>Methods</h2><h3 class='impl'><code>impl&lt;R&gt; <a class='struct' href='../buf_redux/struct.BufReader.html' title='buf_redux::BufReader'>BufReader</a>&lt;R&gt;</code></h3><div class='impl-items'><h4 id='method.new' class='method'><code>fn <a href='#method.new' class='fnname'>new</a>(inner: R) -&gt; Self</code></h4>
+<div class='docblock'><p>Create a new <code>BufReader</code> wrapping <code>inner</code>, with a buffer of a
+default capacity.</p>
+</div><h4 id='method.with_capacity' class='method'><code>fn <a href='#method.with_capacity' class='fnname'>with_capacity</a>(cap: <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.usize.html'>usize</a>, inner: R) -&gt; Self</code></h4>
+<div class='docblock'><p>Create a new <code>BufReader</code> wrapping <code>inner</code> with a capacity
+of <em>at least</em> <code>cap</code> bytes.</p>
+
+<p>The actual capacity of the buffer may vary based on
+implementation details of the buffer&#39;s allocator.</p>
+</div><h4 id='method.make_room' class='method'><code>fn <a href='#method.make_room' class='fnname'>make_room</a>(&amp;mut self)</code></h4>
 <div class='docblock'><p>Move data to the start of the buffer, making room at the end for more
 reading.</p>
 </div><h4 id='method.grow' class='method'><code>fn <a href='#method.grow' class='fnname'>grow</a>(&amp;mut self, additional: <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.usize.html'>usize</a>)</code></h4>
@@ -75,7 +86,8 @@ reallocation and a zeroing of the new memory.</p>
 <div class='docblock'><p>Get a mutable reference to the underlying reader.</p>
 
 <h2 id='note-1' class='section-header'><a href='#note-1'>Note</a></h2>
-<p>Reading directly from the underlying reader is not recommended.</p>
+<p>Reading directly from the underlying reader is not recommended, as some
+data has likely already been moved into the buffer.</p>
 </div><h4 id='method.into_inner' class='method'><code>fn <a href='#method.into_inner' class='fnname'>into_inner</a>(self) -&gt; R</code></h4>
 <div class='docblock'><p>Consumes <code>self</code> and returns the inner reader only.</p>
 </div><h4 id='method.into_inner_with_buf' class='method'><code>fn <a href='#method.into_inner_with_buf' class='fnname'>into_inner_with_buf</a>(self) -&gt; <a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>(</a>R, <a class='struct' href='https://doc.rust-lang.org/nightly/collections/vec/struct.Vec.html' title='collections::vec::Vec'>Vec</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.u8.html'>u8</a>&gt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.tuple.html'>)</a></code></h4>
@@ -88,8 +100,8 @@ only valid data.</p>
 <div class='docblock'><p>Consumes <code>self</code> and returns an adapter which implements <code>Read</code> and will
 empty the buffer before reading directly from the underlying reader.</p>
 </div></div><h3 class='impl'><code>impl&lt;R: <a class='trait' href='https://doc.rust-lang.org/nightly/std/io/trait.Read.html' title='std::io::Read'>Read</a>&gt; <a class='struct' href='../buf_redux/struct.BufReader.html' title='buf_redux::BufReader'>BufReader</a>&lt;R&gt;</code></h3><div class='impl-items'><h4 id='method.read_into_buf' class='method'><code>fn <a href='#method.read_into_buf' class='fnname'>read_into_buf</a>(&amp;mut self) -&gt; <a class='type' href='https://doc.rust-lang.org/nightly/std/io/error/type.Result.html' title='std::io::error::Result'>Result</a>&lt;<a class='primitive' href='https://doc.rust-lang.org/nightly/std/primitive.usize.html'>usize</a>&gt;</code></h4>
-<div class='docblock'><p>Unconditionally perform a read into the buffer, moving data to make room
-if necessary.</p>
+<div class='docblock'><p>Unconditionally perform a read into the buffer, calling <code>.make_room()</code>
+if appropriate or necessary, as determined by the implementation.</p>
 
 <p>If the read was successful, returns the number of bytes now available 
 in the buffer.</p>
