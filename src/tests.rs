@@ -1,4 +1,4 @@
-u// Original implementation Copyright 2013 The Rust Project Developers <https://github.com/rust-lang>
+// Original implementation Copyright 2013 The Rust Project Developers <https://github.com/rust-lang>
 //
 // Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs
 //
