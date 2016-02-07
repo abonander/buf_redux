@@ -18,10 +18,4 @@ Features include:
   * Exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two
     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
 * Drop-in replacement
-  * Method names/signatures and trait impls are unchanged from `std::io::BufReader`, making replacement as easy as:
-  
-```
-- use std::io::BufReader;
-+ extern crate buf_redux;
-+ use buf_redux::BufReader;
-```
+  * Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement stupidly simple.
