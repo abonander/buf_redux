@@ -1,0 +1,1 @@
+initSidebarItems({"struct":[["BufReader",""],["Unbuffer","A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before reading from `inner` directly. Frees the buffer when it has been emptied. "]]});
