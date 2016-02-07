@@ -1,6 +1,6 @@
 # buf\_re(a)dux
 
-A more useful implementation of Rust's `std::io::BufReader`. 
+A drop-in replacement for Rust's `std::io::BufReader` with additional functionality. 
 
 Features include:
 
