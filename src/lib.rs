@@ -88,7 +88,11 @@ impl<R> BufReader<R> {
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
     pub fn make_room(&mut self) {
-        if self.pos == self.cap || self.pos == 0 {
+        if self.pos == 0 {
+            return;
+        }
+
+        if self.pos == self.cap {
             self.pos = 0;
             self.cap = 0;
             return;
