@@ -9,7 +9,33 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-//! A reimplementation of `std::io::BufReader` with additional methods.
+//! A drop-in replacement for `std::io::BufReader` with more functionality.
+//!
+//! Features include:
+//!
+//! * More direct control over the buffer. Provides methods to:
+//!     * Access the buffer through an `&`-reference without performing I/O
+//!     * Force unconditional reads into the buffer
+//!     * Increase the capacity of the buffer
+//!     * Get the number of available bytes as well as the total capacity of the buffer
+//!     * Consume the `BufReader` without losing data
+//!     * Get inner reader and trimmed buffer with the remaining data
+//!     * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
+//! * More sensible buffering behavior
+//!     * Data is moved down to the beginning of the buffer when appropriate
+//!         * Such as when there is more room at the beginning of the buffer than at the end
+//!     * Exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two
+//!         * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
+//! * Drop-in replacement
+//!     * Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement as simple as swapping the import of the type.
+//!
+//! ```notest
+//! - use std::io::BufReader;
+//! + extern crate buf_redux;
+//! + use buf_redux::BufReader;
+//! ```
+//! See the `BufReader` type in this crate for more info.
+
 #![cfg_attr(feature = "nightly", feature(io))]
 
 use std::io::prelude::*;
@@ -22,7 +48,10 @@ mod tests;
 const DEFAULT_BUF_SIZE: usize = 64 * 1024;
 const MOVE_THRESHOLD: usize = 1024;
 
-//! A drop-in replacement for `std::io::BufReader` with more functionality.
+/// A drop-in replacement for `std::io::BufReader` with more functionality.
+///
+/// Original method names/signatures and implemented traits are left untouched,
+/// making replacement as simple as swapping the import of the type.
 pub struct BufReader<R> {
     inner: R,
     buf: Vec<u8>,

@@ -2,8 +2,6 @@
 
 A more useful implementation of Rust's `std::io::BufReader`. 
 
-[Documentation](http://cybergeek94.github.io/buf_redux/buf_redux/)
-
 Features include:
 
 * More direct control over the buffer. Provides methods to:
@@ -20,7 +18,24 @@ Features include:
   * Exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two
     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
 * Drop-in replacement
-  * Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement stupidly simple.
+  * Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement as simple as swapping the import of the type.
+
+## Usage
+
+####[Documentation](http://cybergeek94.github.io/buf_redux/buf_redux/)
+
+`Cargo.toml`:
+```toml
+[dependencies]
+buf_redux = "0.1"
+```
+
+`lib.rs` or `main.rs`:
+```rust
+extern crate buf_redux;
+```
+
+And then find-and-replace `use std::io::BufReader` with `use buf_redux::BufReader` using whatever tool you prefer.
 
 ## License
 
