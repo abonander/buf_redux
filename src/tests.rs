@@ -1,4 +1,15 @@
-use std::io::prelude::*;
+u// Original implementation Copyright 2013 The Rust Project Developers <https://github.com/rust-lang>
+//
+// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs
+//
+// Additions copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+se std::io::prelude::*;
 use std::io::{self, SeekFrom};
 use super::BufReader;
 
