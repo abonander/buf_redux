@@ -2,6 +2,8 @@
 
 A more useful implementation of Rust's `std::io::BufReader`. 
 
+[Documentation](http://cybergeek94.github.io/buf_redux/buf_redux/)
+
 Features include:
 
 * More direct control over the buffer. Provides methods to:
