@@ -11,29 +11,37 @@
 // except according to those terms.
 //! A drop-in replacement for `std::io::BufReader` with more functionality.
 //!
-//! Features include:
-//!
-//! * More direct control over the buffer. Provides methods to:
-//!     * Access the buffer through an `&`-reference without performing I/O
-//!     * Force unconditional reads into the buffer
-//!     * Increase the capacity of the buffer
-//!     * Get the number of available bytes as well as the total capacity of the buffer
-//!     * Consume the `BufReader` without losing data
-//!     * Get inner reader and trimmed buffer with the remaining data
-//!     * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
-//! * More sensible buffering behavior
-//!     * Data is moved down to the beginning of the buffer when appropriate
-//!         * Such as when there is more room at the beginning of the buffer than at the end
-//!     * Exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two
-//!         * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
-//! * Drop-in replacement
-//!     * Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement as simple as swapping the import of the type.
+//! Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement as simple as swapping the import of the type:
 //!
 //! ```notest
 //! - use std::io::BufReader;
 //! + extern crate buf_redux;
 //! + use buf_redux::BufReader;
 //! ```
+//! ### More Direct Control
+//!
+//! Provides methods to:
+//!
+//! * Access the buffer through an `&`-reference without performing I/O
+//! * Force unconditional reads into the buffer
+//! * Shuffle bytes down to the beginning of the buffer to make room for more reading
+//! * Increase the capacity of the buffer
+//! * Get the number of available bytes as well as the total capacity of the buffer
+//! * Consume the `BufReader` without losing data
+//! * Get inner reader and trimmed buffer with the remaining data
+//! * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
+//! *
+//!
+//! ### More Sensible and Customizable Buffering Behavior
+//! * Tune the behavior of the buffer to your specific use-case using the types in the [`strategy`
+//! module](strategy/index.html):
+//!     * `BufReader` performs reads as dictated by the [`ReadStrategy`
+//!     trait](strategy/trait.ReadStrategy.html).
+//!     * `BufReader` shuffles bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
+//! [`MoveStrategy` trait](strategy/trait.MoveStrategy.html).
+//! * `BufReader` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
+//!     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
+//!
 //! See the `BufReader` type in this crate for more info.
 
 #![cfg_attr(feature = "nightly", feature(io))]
@@ -45,45 +53,100 @@ use std::{cmp, fmt, io, ptr};
 #[cfg(test)]
 mod tests;
 
-const DEFAULT_BUF_SIZE: usize = 64 * 1024;
-const MOVE_THRESHOLD: usize = 1024;
+pub mod strategy;
 
-/// A drop-in replacement for `std::io::BufReader` with more functionality.
+use self::strategy::{MoveStrategy, ReadStrategy, IfEmpty, AtEndLessThan1k};
+
+const DEFAULT_BUF_SIZE: usize = 64 * 1024;
+
+pub type DefaultReadStrategy = IfEmpty;
+pub type DefaultMoveStrategy = AtEndLessThan1k;
+
+/// The *pièce de résistance:* a drop-in replacement for `std::io::BufReader` with more functionality.
 ///
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
-pub struct BufReader<R> {
+pub struct BufReader<R, Rs, Ms>{
     inner: R,
     buf: Vec<u8>,
     pos: usize,
     cap: usize,
+    read_strat: Rs, 
+    move_strat: Ms,
 }
 
-impl<R> BufReader<R> {
+impl<R> BufReader<R, DefaultReadStrategy, DefaultMoveStrategy> {
     /// Create a new `BufReader` wrapping `inner`, with a buffer of a
-    /// default capacity.
+    /// default capacity and default strategies.
     pub fn new(inner: R) -> Self {
-        BufReader::with_capacity(DEFAULT_BUF_SIZE, inner)
+        Self::with_strategies(inner, Default::default(), Default::default())
     }
 
     /// Create a new `BufReader` wrapping `inner` with a capacity
-    /// of *at least* `cap` bytes.
+    /// of *at least* `cap` bytes and default strategies.
     ///
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
     pub fn with_capacity(cap: usize, inner: R) -> Self {
-        let mut self_ = BufReader {
+        Self::with_cap_and_strategies(inner, cap, Default::default(), Default::default())
+    }
+}
+
+impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
+    /// Create a new `BufReader` wrapping `inner`, with a default buffer capacity
+    /// and with the given `ReadStrategy` and `MoveStrategy`.
+    pub fn with_strategies(inner: R, rs: Rs, ms: Ms) -> Self {
+        Self::with_cap_and_strategies(inner, DEFAULT_BUF_SIZE, rs, ms)
+    }
+
+    /// Create a new `BufReader` wrapping `inner`, with a buffer capacity of *at least*
+    /// `cap` bytes and the given `ReadStrategy` and `MoveStrategy`.
+    /// 
+    /// The actual capacity of the buffer may vary based on
+    /// implementation details of the buffer's allocator.
+    pub fn with_cap_and_strategies(inner: R, cap: usize, rs: Rs, ms: Ms) -> Self {
+        let mut self_ = BufReader { 
             inner: inner,
             buf: Vec::new(),
             pos: 0,
             cap: 0,
+            read_strat: rs,
+            move_strat: ms,
         };
 
-        // We've already implemented exact-ish reallocation, so DRY
         self_.grow(cap);
-
         self_
-    } 
+    }
+
+    /// Apply a new `MoveStrategy` to this `BufReader`, returning the transformed type.
+    pub fn move_strategy<Ms_: MoveStrategy>(self, ms: Ms_) -> BufReader<R, Rs, Ms_> {
+        BufReader { 
+            inner: self.inner,
+            buf: self.buf,
+            pos: self.pos,
+            cap: self.cap,
+            read_strat: self.read_strat,
+            move_strat: ms,
+        }
+    }
+
+    /// Apply a new `ReadStrategy` to this `BufReader`, returning the transformed type.
+    pub fn read_strategy<Rs_: ReadStrategy>(self, rs: Rs_) -> BufReader<R, Rs_, Ms> {
+        BufReader { 
+            inner: self.inner,
+            buf: self.buf,
+            pos: self.pos,
+            cap: self.cap,
+            read_strat: rs,
+            move_strat: self.move_strat,
+        }
+    }
+
+    /// Accessor for updating the `MoveStrategy` in-place. Must be the same type.
+    pub fn move_strategy_mut(&mut self) -> &mut Ms { &mut self.move_strat }
+
+    /// Accessor for updating the `ReadStrategy` in-place. Must be the same type.
+    pub fn read_strategy_mut(&mut self) -> &mut Rs { &mut self.read_strat }
 
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
@@ -185,9 +248,18 @@ impl<R> BufReader<R> {
             pos: self.pos,
         }
     }
+
+    #[inline]
+    fn should_read(&self) -> bool {
+        self.read_strat.should_read(self.pos, self.cap, self.buf.len())
+    }
+
+    fn should_move(&self) -> bool {
+        self.move_strat.should_move(self.pos, self.cap, self.buf.len())
+    }
 }
 
-impl<R: Read> BufReader<R> {
+impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// Unconditionally perform a read into the buffer, calling `.make_room()`
     /// if appropriate or necessary, as determined by the implementation.
     ///
@@ -197,11 +269,8 @@ impl<R: Read> BufReader<R> {
         if self.pos == self.cap {
             self.cap = try!(self.inner.read(&mut self.buf));
             self.pos = 0;
-        } else {
-            // If there's more room at the beginning of the buffer
-            // than at the end, move the data down.
-            if self.buf.len() - self.cap < self.pos &&
-                    self.pos > MOVE_THRESHOLD {
+        } else { 
+            if self.should_move() {
                 self.make_room();
             }
 
@@ -212,7 +281,7 @@ impl<R: Read> BufReader<R> {
     }
 }
 
-impl<R: Read> Read for BufReader<R> {
+impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> Read for BufReader<R, Rs, Ms> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // If we don't have any buffered data and we're doing a massive read
         // (larger than our internal buffer), bypass our internal buffer
@@ -230,13 +299,12 @@ impl<R: Read> Read for BufReader<R> {
     }
 }
 
-impl<R: Read> BufRead for BufReader<R> {
+impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufRead for BufReader<R, Rs, Ms> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
-        if self.pos == self.cap {
-            self.cap = try!(self.inner.read(&mut self.buf));
-            self.pos = 0;
+        if self.should_read() {
+            let _ = try!(self.read_into_buf());
         }
 
         Ok(&self.buf[self.pos..self.cap])
@@ -247,17 +315,19 @@ impl<R: Read> BufRead for BufReader<R> {
     }
 }
 
-impl<R> fmt::Debug for BufReader<R> where R: fmt::Debug {
+impl<R: fmt::Debug, Rs: ReadStrategy, Ms: MoveStrategy> fmt::Debug for BufReader<R, Rs, Ms> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("buf_redux::BufReader")
             .field("reader", &self.inner)
             .field("available", &self.available())
             .field("capacity", &self.capacity())
+            .field("read_strategy", &self.read_strat)
+            .field("move_strategy", &self.move_strat)
             .finish()
     }
 }
 
-impl<R: Seek> Seek for BufReader<R> {
+impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> {
     /// Seek to an offset, in bytes, in the underlying reader.
     ///
     /// The position used for seeking with `SeekFrom::Current(_)` is the
