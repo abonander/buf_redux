@@ -24,12 +24,12 @@ A drop-in replacement for Rust's `std::io::BufReader` with additional functional
 
 ### More Sensible and Customizable Buffering Behavior
 
- * Tune the behavior of the buffer to your specific use-case using the types in the `strategy`
- module:
-     * `BufReader` performs reads as dictated by the `ReadStrategy`
-     trait.
+ * Tune the behavior of the buffer to your specific use-case using the types in the [`strategy`
+ module](http://cybergeek94.github.io/buf_redux/buf_redux/strategy/):
+     * `BufReader` performs reads as dictated by the [`ReadStrategy`
+     trait](http://cybergeek94.github.io/buf_redux/buf_redux/strategy/trait.ReadStrategy.html).
      * `BufReader` shuffles bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
- `MoveStrategy` trait.
+ [`MoveStrategy` trait](http://cybergeek94.github.io/buf_redux/buf_redux/strategy/trait.MoveStrategy.html).
      * Feel free to ignore these traits if the default behavior works for you!
  * `BufReader` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
      * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
