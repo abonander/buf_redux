@@ -9,7 +9,7 @@ A drop-in replacement for Rust's `std::io::BufReader` with additional functional
  + extern crate buf_redux;
  + use buf_redux::BufReader;
  ```
- ### More Direct Control
+### More Direct Control
 
  Provides methods to:
 
@@ -22,7 +22,8 @@ A drop-in replacement for Rust's `std::io::BufReader` with additional functional
  * Get inner reader and trimmed buffer with the remaining data
  * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly 
 
- ### More Sensible and Customizable Buffering Behavior
+### More Sensible and Customizable Buffering Behavior
+
  * Tune the behavior of the buffer to your specific use-case using the types in the `strategy`
  module:
      * `BufReader` performs reads as dictated by the `ReadStrategy`
