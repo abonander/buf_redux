@@ -57,7 +57,7 @@ pub mod strategy;
 
 use self::strategy::{MoveStrategy, ReadStrategy, IfEmpty, AtEndLessThan1k};
 
-const DEFAULT_BUF_SIZE: usize = 64 * 1024;
+const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
 pub type DefaultReadStrategy = IfEmpty;
 pub type DefaultMoveStrategy = AtEndLessThan1k;
