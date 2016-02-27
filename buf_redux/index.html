@@ -46,58 +46,66 @@
             <a id="toggle-all-docs" href="javascript:void(0)" title="collapse all docs">
                 [<span class='inner'>&#x2212;</span>]
             </a>
-        </span><a id='src-0' class='srclink' href='../src/buf_redux/lib.rs.html#12-353' title='goto source code'>[src]</a></span></h1>
+        </span><a id='src-0' class='srclink' href='../src/buf_redux/lib.rs.html#12-427' title='goto source code'>[src]</a></span></h1>
 <div class='docblock'><p>A drop-in replacement for <code>std::io::BufReader</code> with more functionality.</p>
 
-<p>Features include:</p>
-
-<ul>
-<li>More direct control over the buffer. Provides methods to:
-
-<ul>
-<li>Access the buffer through an <code>&amp;</code>-reference without performing I/O</li>
-<li>Force unconditional reads into the buffer</li>
-<li>Increase the capacity of the buffer</li>
-<li>Get the number of available bytes as well as the total capacity of the buffer</li>
-<li>Consume the <code>BufReader</code> without losing data</li>
-<li>Get inner reader and trimmed buffer with the remaining data</li>
-<li>Get a <code>Read</code> adapter which empties the buffer and then pulls from the inner reader directly</li>
-</ul></li>
-<li>More sensible buffering behavior
-
-<ul>
-<li>Data is moved down to the beginning of the buffer when appropriate
-
-<ul>
-<li>Such as when there is more room at the beginning of the buffer than at the end</li>
-</ul></li>
-<li>Exact allocation instead of leaving it up to <code>Vec</code>, which allocates sizes in powers of two
-
-<ul>
-<li>Vec&#39;s behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.</li>
-</ul></li>
-</ul></li>
-<li>Drop-in replacement
-
-<ul>
-<li>Method names/signatures and implemented traits are unchanged from <code>std::io::BufReader</code>, making replacement as simple as swapping the import of the type.</li>
-</ul></li>
-</ul>
+<p>Method names/signatures and implemented traits are unchanged from <code>std::io::BufReader</code>, making replacement as simple as swapping the import of the type:</p>
 
 <pre><code class="language-notest">- use std::io::BufReader;
 + extern crate buf_redux;
 + use buf_redux::BufReader;
 </code></pre>
 
+<h3 id='more-direct-control' class='section-header'><a href='#more-direct-control'>More Direct Control</a></h3>
+<p>Provides methods to:</p>
+
+<ul>
+<li>Access the buffer through an <code>&amp;</code>-reference without performing I/O</li>
+<li>Force unconditional reads into the buffer</li>
+<li>Shuffle bytes down to the beginning of the buffer to make room for more reading</li>
+<li>Increase the capacity of the buffer</li>
+<li>Get the number of available bytes as well as the total capacity of the buffer</li>
+<li>Consume the <code>BufReader</code> without losing data</li>
+<li>Get inner reader and trimmed buffer with the remaining data</li>
+<li>Get a <code>Read</code> adapter which empties the buffer and then pulls from the inner reader directly
+*</li>
+</ul>
+
+<h3 id='more-sensible-and-customizable-buffering-behavior' class='section-header'><a href='#more-sensible-and-customizable-buffering-behavior'>More Sensible and Customizable Buffering Behavior</a></h3>
+<ul>
+<li>Tune the behavior of the buffer to your specific use-case using the types in the <a href="strategy/index.html"><code>strategy</code>
+module</a>:
+
+<ul>
+<li><code>BufReader</code> performs reads as dictated by the <a href="strategy/trait.ReadStrategy.html"><code>ReadStrategy</code>
+trait</a>.</li>
+<li><code>BufReader</code> shuffles bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
+<a href="strategy/trait.MoveStrategy.html"><code>MoveStrategy</code> trait</a>.</li>
+</ul></li>
+<li><code>BufReader</code> uses exact allocation instead of leaving it up to <code>Vec</code>, which allocates sizes in powers of two.
+
+<ul>
+<li>Vec&#39;s behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.</li>
+</ul></li>
+</ul>
+
 <p>See the <code>BufReader</code> type in this crate for more info.</p>
-</div><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
+</div><h2 id='modules' class='section-header'><a href="#modules">Modules</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='mod' href='strategy/index.html'
+                               title='buf_redux::strategy'>strategy</a></td>
+                        <td class='docblock short'>
+                             <p>Types which can be used to tune the behavior of <code>BufReader</code>.</p>
+                        </td>
+                    </tr>
+                </table><h2 id='structs' class='section-header'><a href="#structs">Structs</a></h2>
 <table>
                     <tr class=' module-item'>
                         <td><a class='struct' href='struct.BufReader.html'
                                title='buf_redux::BufReader'>BufReader</a></td>
                         <td class='docblock short'>
-                             <p>A drop-in replacement for <code>std::io::BufReader</code> with more functionality.</p>
-
+                             <p>The <em>pièce de résistance:</em> a drop-in replacement for <code>std::io::BufReader</code> with more functionality.</p>
                         </td>
                     </tr>
                 
@@ -107,7 +115,23 @@
                         <td class='docblock short'>
                              <p>A <code>Read</code> adapter for a consumed <code>BufReader</code> which will empty bytes from the buffer before reading from
 <code>inner</code> directly. Frees the buffer when it has been emptied. </p>
-
+                        </td>
+                    </tr>
+                </table><h2 id='types' class='section-header'><a href="#types">Type Definitions</a></h2>
+<table>
+                    <tr class=' module-item'>
+                        <td><a class='type' href='type.DefaultMoveStrategy.html'
+                               title='buf_redux::DefaultMoveStrategy'>DefaultMoveStrategy</a></td>
+                        <td class='docblock short'>
+                             
+                        </td>
+                    </tr>
+                
+                    <tr class=' module-item'>
+                        <td><a class='type' href='type.DefaultReadStrategy.html'
+                               title='buf_redux::DefaultReadStrategy'>DefaultReadStrategy</a></td>
+                        <td class='docblock short'>
+                             
                         </td>
                     </tr>
                 </table></section>
@@ -153,7 +177,7 @@
 
                 <p>
                     Search functions by type signature (e.g.
-                    <code>vec -> usize</code>)
+                    <code>vec -> usize</code> or <code>* -> vec</code>)
                 </p>
             </div>
         </div>
