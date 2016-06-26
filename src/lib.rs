@@ -68,9 +68,7 @@ pub type DefaultMoveStrategy = AtEndLessThan1k;
 /// making replacement as simple as swapping the import of the type.
 pub struct BufReader<R, Rs, Ms>{
     inner: R,
-    buf: Vec<u8>,
-    pos: usize,
-    cap: usize,
+    buf: Buffer,
     read_strat: Rs, 
     move_strat: Ms,
 }
@@ -107,9 +105,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     pub fn with_cap_and_strategies(inner: R, cap: usize, rs: Rs, ms: Ms) -> Self {
         let mut self_ = BufReader { 
             inner: inner,
-            buf: Vec::new(),
-            pos: 0,
-            cap: 0,
+            buf: Buffer::new(),
             read_strat: rs,
             move_strat: ms,
         };
@@ -123,8 +119,6 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         BufReader { 
             inner: self.inner,
             buf: self.buf,
-            pos: self.pos,
-            cap: self.cap,
             read_strat: self.read_strat,
             move_strat: ms,
         }
@@ -135,8 +129,6 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         BufReader { 
             inner: self.inner,
             buf: self.buf,
-            pos: self.pos,
-            cap: self.cap,
             read_strat: rs,
             move_strat: self.move_strat,
         }
@@ -151,28 +143,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
     pub fn make_room(&mut self) {
-        if self.pos == 0 {
-            return;
-        }
-
-        if self.pos == self.cap {
-            self.pos = 0;
-            self.cap = 0;
-            return;
-        }
-
-        let src = self.buf[self.pos..].as_ptr();
-        let dest = self.buf.as_mut_ptr();
-
-        // Guaranteed lowering to memmove.
-        // FIXME: Replace with a safe implementation when one becomes available.
-        unsafe {
-            ptr::copy(src, dest, self.cap - self.pos);
-        }
-
-        self.cap -= self.pos;
-        self.pos = 0;
-    }
+            }
 
     /// Grow the internal buffer by *at least* `additional` bytes. May not be
     /// quite exact due to implementation details of the buffer's allocator.
@@ -203,12 +174,12 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
 
     /// Get the current number of bytes available in the buffer.
     pub fn available(&self) -> usize {
-        self.cap - self.pos
+        self.buf.available()
     }
 
     /// Get the total buffer capacity.
     pub fn capacity(&self) -> usize {
-        self.buf.len()
+        self.buf.capacity()
     }
 
     /// Get an immutable reference to the underlying reader.
@@ -371,6 +342,102 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
         Ok(result)
     }
 }
+
+pub struct Buffer {
+    buf: Vec<u8>,
+    pos: usize,
+    end: usize,
+}
+
+impl Buffer {
+    pub fn new() -> Self {
+        Self::with_capacity(DEFAULT_BUF_SIZE),
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        let mut buf = vec![0; cap];
+        let cap = buf.capacity();
+        buf.resize(cap, 0);
+
+        Buffer {
+            buf: buf,
+            pos: 0,
+            end: 0,
+        }
+    }
+
+    pub unsafe fn with_capacity_unzeroed(cap: usize) {
+        let mut buf = Vec::with_capacity(cap);
+        let cap = buf.capacity();
+        buf.set_len(cap);
+
+        Buffer {
+            buf: buf,
+            pos: 0,
+            end: 0,
+        }
+    }
+
+    pub fn available(&self) -> usize {
+        self.end - self.pos
+    }
+
+    pub fn headroom(&self) -> usize {
+        self.buf.len() - self.end
+    }
+
+    pub unsafe fn resize_unzeroed(&mut self, new_size: usize) {
+        self.buf.set_len(new_size);
+        self.pos = cmp::max(new_size, self.pos);
+        self.end = cmp::max(new_size, self.end);
+    }
+
+    pub fn resize(&mut self, new_size: usize) {
+        
+    }
+
+    pub fn make_room(&mut self) {
+        if self.pos == 0 {
+            return;
+        }
+
+        if self.pos == self.cap {
+            self.pos = 0;
+            self.end = 0;
+            return;
+        }
+
+        let src = self.buf[self.pos..].as_ptr();
+        let dest = self.buf.as_mut_ptr();
+
+        // Guaranteed lowering to memmove.
+        // FIXME: Replace with a safe implementation when one becomes available.
+        unsafe {
+            ptr::copy(src, dest, self.end - self.pos);
+        }
+
+        self.end -= self.pos;
+        self.pos = 0;
+
+    }            
+
+    pub fn buf(&self) -> &[u8] { &self.buf[self.pos .. self.end] }
+
+    pub fn buf_mut(&mut self) -> &mut [u8] { &mut self.buf[self.pos .. self.end] }
+
+    pub fn read_from<R: Read>(&mut self, rdr: &mut R) -> io::Result<usize> {
+        let read = try!(rdr.read(&mut self.buf[self.end..]));
+        self.end += read;
+        read
+    }
+
+    pub fn copy_from_slice(&mut self, src: &[u8]) {
+        let 
+
+        self.buf[self.end..].copy_from_slice(src);
+    }
+}
+
 
 /// A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before reading from
 /// `inner` directly. Frees the buffer when it has been emptied. 
