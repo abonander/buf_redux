@@ -43,12 +43,12 @@
 //!     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
 //!
 //! See the `BufReader` type in this crate for more info.
-
+#![warn(missing_docs)]
 #![cfg_attr(feature = "nightly", feature(io))]
 
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, fmt, io, ptr};
+use std::{cmp, fmt, io, mem, ptr};
 
 #[cfg(test)]
 mod tests;
@@ -143,7 +143,8 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
     pub fn make_room(&mut self) {
-            }
+        self.buf.make_room();        
+    }
 
     /// Grow the internal buffer by *at least* `additional` bytes. May not be
     /// quite exact due to implementation details of the buffer's allocator.
@@ -152,15 +153,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// This should not be called frequently as each call will incur a 
     /// reallocation and a zeroing of the new memory.
     pub fn grow(&mut self, additional: usize) {
-        // We're not expecting to grow frequently, so the power-of-two growth
-        // of `Vec::reserve()` is unnecessarily greedy.
-        self.buf.reserve_exact(additional);
-
-        // According to reserve_exact(), the allocator can still return more 
-        // memory than requested; if that's the case, we might as well 
-        // use all of it.
-        let new_len = self.buf.capacity();
-        self.buf.resize(new_len, 0u8);
+        self.buf.grow(additional);    
     }
 
     // RFC: pub fn shrink(&mut self, new_len: usize) ?
@@ -169,7 +162,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     ///
     /// Call `.consume()` to remove bytes from the beginning of this section.
     pub fn get_buf(&self) -> &[u8] {
-        &self.buf[self.pos .. self.cap]
+        self.buf.buf()
     }
 
     /// Get the current number of bytes available in the buffer.
@@ -202,31 +195,26 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// only valid data.
     ///
     /// See also: `BufReader::unbuffer()`
-    pub fn into_inner_with_buf(mut self) -> (R, Vec<u8>) {
-        self.make_room();
-        self.buf.truncate(self.cap);
-        (self.inner, self.buf)
+    pub fn into_inner_with_buf(self) -> (R, Vec<u8>) {
+        (self.inner, self.buf.into_inner())
     }
 
     /// Consumes `self` and returns an adapter which implements `Read` and will 
     /// empty the buffer before reading directly from the underlying reader.
-    pub fn unbuffer(mut self) -> Unbuffer<R> {
-        self.buf.truncate(self.cap);
-
+    pub fn unbuffer(self) -> Unbuffer<R> {
         Unbuffer {
             inner: self.inner,
-            buf: self.buf,
-            pos: self.pos,
+            buf: Some(self.buf),
         }
     }
 
     #[inline]
     fn should_read(&self) -> bool {
-        self.read_strat.should_read(self.pos, self.cap, self.buf.len())
+        self.read_strat.should_read(&self.buf)
     }
 
     fn should_move(&self) -> bool {
-        self.move_strat.should_move(self.pos, self.cap, self.buf.len())
+        self.move_strat.should_move(&self.buf)
     }
 }
 
@@ -236,34 +224,27 @@ impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     ///
     /// If the read was successful, returns the number of bytes now available 
     /// in the buffer.
-    pub fn read_into_buf(&mut self) -> io::Result<usize> {
-        if self.pos == self.cap {
-            self.cap = try!(self.inner.read(&mut self.buf));
-            self.pos = 0;
-        } else { 
-            if self.should_move() {
-                self.make_room();
-            }
-
-            self.cap += try!(self.inner.read(&mut self.buf[self.cap..]));
+    pub fn read_into_buf(&mut self) -> io::Result<usize> { 
+        if self.should_move() {
+            self.make_room();
         }
-
-        Ok(self.cap - self.pos)
+        
+        self.buf.read_from(&mut self.inner)
     }
 }
 
 impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> Read for BufReader<R, Rs, Ms> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         // If we don't have any buffered data and we're doing a massive read
         // (larger than our internal buffer), bypass our internal buffer
         // entirely.
-        if self.pos == self.cap && buf.len() >= self.buf.len() {
-            return self.inner.read(buf);
+        if self.buf.is_empty() && out.len() > self.buf.capacity() {
+            return self.inner.read(out);
         }
 
         let nread = {
             let mut rem = try!(self.fill_buf());
-            try!(rem.read(buf))
+            try!(rem.read(out))
         };
         self.consume(nread);
         Ok(nread)
@@ -278,11 +259,11 @@ impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufRead for BufReader<R, Rs, M
             let _ = try!(self.read_into_buf());
         }
 
-        Ok(&self.buf[self.pos..self.cap])
+        Ok(self.get_buf())
     }
 
     fn consume(&mut self, amt: usize) {
-        self.pos = cmp::min(self.pos + amt, self.cap);
+        self.buf.consume(amt);
     }
 }
 
@@ -320,7 +301,7 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let result: u64;
         if let SeekFrom::Current(n) = pos {
-            let remainder = (self.cap - self.pos) as i64;
+            let remainder = self.available() as i64;
             // it should be safe to assume that remainder fits within an i64 as the alternative
             // means we managed to allocate 8 ebibytes and that's absurd.
             // But it's not out of the realm of possibility for some weird underlying reader to
@@ -331,14 +312,14 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
             } else {
                 // seek backwards by our remainder, and then by the offset
                 try!(self.inner.seek(SeekFrom::Current(-remainder)));
-                self.pos = self.cap; // empty the buffer
+                self.buf.clear(); // empty the buffer
                 result = try!(self.inner.seek(SeekFrom::Current(n)));
             }
         } else {
             // Seeking with Start/End doesn't care about our buffer length.
             result = try!(self.inner.seek(pos));
         }
-        self.pos = self.cap; // empty the buffer
+        self.buf.clear();
         Ok(result)
     }
 }
@@ -351,7 +332,7 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new() -> Self {
-        Self::with_capacity(DEFAULT_BUF_SIZE),
+        Self::with_capacity(DEFAULT_BUF_SIZE)
     }
 
     pub fn with_capacity(cap: usize) -> Self {
@@ -366,7 +347,7 @@ impl Buffer {
         }
     }
 
-    pub unsafe fn with_capacity_unzeroed(cap: usize) {
+    pub unsafe fn with_capacity_unzeroed(cap: usize) -> Self {
         let mut buf = Vec::with_capacity(cap);
         let cap = buf.capacity();
         buf.set_len(cap);
@@ -386,27 +367,72 @@ impl Buffer {
         self.buf.len() - self.end
     }
 
-    pub unsafe fn resize_unzeroed(&mut self, new_size: usize) {
-        self.buf.set_len(new_size);
-        self.pos = cmp::max(new_size, self.pos);
-        self.end = cmp::max(new_size, self.end);
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
     }
 
-    pub fn resize(&mut self, new_size: usize) {
-        
+    pub fn is_empty(&self) -> bool {
+        self.available() == 0
+    }
+
+    pub unsafe fn grow_unzeroed(&mut self, additional: usize) {
+        self.check_cursors();
+
+        let new_len = self.buf.len().checked_add(additional)
+            .expect("Overflow calculating new capacity");
+
+        let buf = mem::replace(&mut self.buf, Vec::with_capacity(new_len));
+        let cap = self.buf.capacity();
+            
+        self.buf.set_len(cap);
+
+        // WTB smarter borrowing for temporaries
+        let avail = self.available();
+
+        self.buf[.. avail]
+            .copy_from_slice(&buf[self.pos .. self.end]);
+
+        self.end -= self.pos;
+        self.pos = 0;
+    }
+
+    pub fn grow(&mut self, additional: usize) {
+        self.check_cursors();
+
+        let new_len = self.buf.len().checked_add(additional)
+            .expect("Overflow calculating new capacity");
+
+        let buf = mem::replace(&mut self.buf, vec![0; new_len]);
+
+        let cap = self.buf.capacity();
+        self.buf.resize(cap, 0);
+
+        let avail = self.available();
+
+        self.buf[.. avail]
+            .copy_from_slice(&buf[self.pos .. self.end]);
+
+        self.end -= self.pos;
+        self.pos = 0;
+    }
+
+    fn check_cursors(&mut self) -> bool {
+        if self.pos == 0 {
+            false
+        } else if self.pos == self.end {
+            self.pos = 0;
+            self.end = 0;
+            false
+        } else {
+            true
+        }
     }
 
     pub fn make_room(&mut self) {
-        if self.pos == 0 {
+        if self.check_cursors() {
             return;
         }
-
-        if self.pos == self.cap {
-            self.pos = 0;
-            self.end = 0;
-            return;
-        }
-
+        
         let src = self.buf[self.pos..].as_ptr();
         let dest = self.buf.as_mut_ptr();
 
@@ -426,61 +452,105 @@ impl Buffer {
     pub fn buf_mut(&mut self) -> &mut [u8] { &mut self.buf[self.pos .. self.end] }
 
     pub fn read_from<R: Read>(&mut self, rdr: &mut R) -> io::Result<usize> {
+        let _ = self.check_cursors();
+
         let read = try!(rdr.read(&mut self.buf[self.end..]));
-        self.end += read;
-        read
+        self.end += cmp::min(self.buf.len(), read);
+        Ok(read)
     }
 
-    pub fn copy_from_slice(&mut self, src: &[u8]) {
-        let 
+    pub fn copy_from_slice(&mut self, src: &[u8]) -> usize {
+        let _ = self.check_cursors();
+    
+        let len = cmp::min(self.buf.len() - self.end, src.len());
 
-        self.buf[self.end..].copy_from_slice(src);
+        self.buf[self.end..].copy_from_slice(&src[..len]);
+
+        len
+    }
+
+    pub fn consume(&mut self, amt: usize) {
+        let avail = self.available();
+
+        if amt == avail {
+            self.clear();
+        } else {
+            let amt = cmp::min(self.available(), amt);
+            self.pos += amt;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.pos = 0;
+        self.end = 0;
+    }
+
+    pub fn into_inner(mut self) -> Vec<u8> {
+        self.make_room();
+        let avail = self.available();
+        self.buf.truncate(avail);
+        self.buf
     }
 }
 
+impl Read for Buffer {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let len = cmp::min(self.buf.len(), out.len());
+        out[..len].copy_from_slice(&self.buf[..len]);
+        Ok(len)
+    }
+}
+
+impl fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("buf_redux::Buffer")
+            .field("capacity", &self.capacity())
+            .field("available", &self.available())
+            .finish()
+    }
+}
 
 /// A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before reading from
 /// `inner` directly. Frees the buffer when it has been emptied. 
 pub struct Unbuffer<R> {
     inner: R,
-    buf: Vec<u8>,
-    pos: usize,
+    buf: Option<Buffer>,
 }
 
 impl<R> Unbuffer<R> {
     /// Returns `true` if the buffer still has some bytes left, `false` otherwise.
     pub fn is_buf_empty(&self) -> bool {
-        self.pos >= self.buf.len()
+        !self.buf.is_some()
     }
 
     /// Returns the number of bytes remaining in the buffer.
     pub fn buf_len(&self) -> usize {
-        self.buf.len().saturating_sub(self.pos)
+        self.buf.as_ref().map(Buffer::available).unwrap_or(0)
     }
 
-    /// Return the underlying reader, finally letting the buffer die in peace and join its family
-    /// in allocation-heaven.
+    pub fn buf(&self) -> &[u8] {
+        self.buf.as_ref().map_or(&[], Buffer::buf)
+    }
+
+    /// Return the underlying reader, releasing the buffer.
     pub fn into_inner(self) -> R {
         self.inner
     }
 }
 
 impl<R: Read> Read for Unbuffer<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pos < self.buf.len() {
-            // RFC: Is `try!()` necessary here since this shouldn't
-            // really return an error, ever?
-            let read = try!((&self.buf[self.pos..]).read(buf));
-            self.pos += read;
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if let Some(ref mut buf) = self.buf.as_mut() {
+            let read = buf.read(out).unwrap();
 
-            if self.pos == self.buf.len() {
-                self.buf == Vec::new();
+            if out.len() != 0 && read != 0 {
+                return Ok(read);
             }
-
-            Ok(read)
-        } else {
-            self.inner.read(buf)
         }
+
+        self.buf = None;
+
+        self.inner.read(out)
     }
 }
 
@@ -488,7 +558,7 @@ impl<R: fmt::Debug> fmt::Debug for Unbuffer<R> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("buf_redux::Unbuffer")
             .field("reader", &self.inner)
-            .field("buffer", &format_args!("{}/{}", self.pos, self.buf.len()))
+            .field("buffer", &self.buf)
             .finish()
     }
 }

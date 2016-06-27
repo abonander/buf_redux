@@ -3,23 +3,15 @@
 //! Some simple strategies are provided for your convenience. You may prefer to create your own
 //! types and implement the traits for them instead.
 
+use super::Buffer;
+
 use std::fmt;
 
 /// Trait for types which `BufReader` can consult to determine when it should read more data into the
 /// buffer.
 pub trait ReadStrategy: Default + fmt::Debug {
     /// Returns `true` if the buffer should read more data, `false` otherwise.
-    ///
-    /// Parameters:
-    ///
-    /// * `start`: The starting index of the valid data region in the buffer (inclusive).
-    /// * `end`: The ending index of the valid data region in the buffer (exclusive).
-    /// * `buf_size`: The total size of the buffer.
-    ///
-    /// `end - start` = number of valid bytes in the buffer.
-    ///
-    /// Implementors may assume `end - start >= 0`
-    fn should_read(&self, start: usize, end: usize, buf_size: usize) -> bool;
+    fn should_read(&self, buffer: &Buffer) -> bool;
 }
 
 /// A `ReadStrategy` which tells the buffer to read more data only when empty.
@@ -30,8 +22,8 @@ pub struct IfEmpty;
 
 impl ReadStrategy for IfEmpty {
     #[inline]
-    fn should_read(&self, start: usize, end: usize, _: usize) -> bool {
-        end - start == 0
+    fn should_read(&self, buffer: &Buffer) -> bool {
+        buffer.available() == 0
     }
 }
 
@@ -41,8 +33,8 @@ impl ReadStrategy for IfEmpty {
 pub struct LessThan(pub usize);
 
 impl ReadStrategy for LessThan { 
-    fn should_read(&self, start: usize, end: usize, _: usize) -> bool { 
-        end - start < self.0
+    fn should_read(&self, buffer: &Buffer) -> bool { 
+        buffer.available() < self.0
     }
 }
 
@@ -54,17 +46,7 @@ impl ReadStrategy for LessThan {
 pub trait MoveStrategy: Default + fmt::Debug {
     /// Returns `true` if the buffer should move the data down to the beginning, 
     /// `false` otherwise.
-    ///
-    /// Parameters:
-    ///
-    /// * `start`: The starting index of the valid data region in the buffer (inclusive).
-    /// * `end`: The ending index of the valid data region in the buffer (exclusive).
-    /// * `buf_size`: The total size of the buffer.
-    ///
-    /// `end - start` = number of valid bytes in the buffer.
-    ///
-    /// Implementors may assume `end - start >= 0`
-    fn should_move(&self, start: usize, end: usize, buf_size: usize) -> bool;
+    fn should_move(&self, buffer: &Buffer) -> bool;
 }
 
 /// A `MoveStrategy` which tells the buffer to move data if there is no more room at the tail
@@ -78,8 +60,8 @@ pub struct AtEndLessThan1k;
 
 impl MoveStrategy for AtEndLessThan1k { 
     #[inline]
-    fn should_move(&self, start: usize, end: usize, buf_size: usize) -> bool { 
-        end == buf_size && end - start < 1024
+    fn should_move(&self, buffer: &Buffer) -> bool { 
+        buffer.headroom() == 0 && buffer.available() < 1024
     }
 }
 
@@ -92,8 +74,8 @@ impl MoveStrategy for AtEndLessThan1k {
 pub struct AtEndLessThan(pub usize);
 
 impl MoveStrategy for AtEndLessThan { 
-    fn should_move(&self, start: usize, end: usize, buf_size: usize) -> bool {
-        end == buf_size && end - start < self.0
+    fn should_move(&self, buffer: &Buffer) -> bool {
+        buffer.headroom() == 0 && buffer.available() < self.0
     }
 }
 
@@ -104,7 +86,7 @@ pub struct NeverMove;
 
 impl MoveStrategy for NeverMove {
     #[inline]
-    fn should_move(&self, _: usize, _: usize, _: usize) -> bool {
+    fn should_move(&self, _: &Buffer) -> bool {
         false
     }
 }
