@@ -466,6 +466,29 @@ impl Buffer {
 
         self.buf[self.end..].copy_from_slice(&src[..len]);
 
+        self.end += len;
+
+        len
+    }
+
+    pub fn write_to(&mut self, wrt: &mut Write) -> io::Result<usize> {
+        let _ = self.check_cursors();
+
+        let written = try!(wrt.write(self.buf()));
+        self.pos += cmp::min(written, self.end);
+        Ok(written)
+    }
+
+    pub fn copy_to_slice(&mut self, out: &mut [u8]) -> usize {
+        let _ = self.check_cursors();
+    
+        let buf = self.buf();
+
+        let len = cmp::min(buf.len(), out.len());
+        out[..len].copy_from_slice(buf[..len]);
+
+        self.pos += len;
+
         len
     }
 
