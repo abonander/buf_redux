@@ -66,7 +66,7 @@ pub type DefaultMoveStrategy = AtEndLessThan1k;
 ///
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
-pub struct BufReader<R, Rs, Ms>{
+pub struct BufReader<R, Rs = DefaultReadStrategy, Ms = DefaultMoveStrategy>{
     inner: R,
     buf: Buffer,
     read_strat: Rs, 
@@ -481,15 +481,32 @@ impl Buffer {
 
     pub fn copy_to_slice(&mut self, out: &mut [u8]) -> usize {
         let _ = self.check_cursors();
-    
-        let buf = self.buf();
 
-        let len = cmp::min(buf.len(), out.len());
-        out[..len].copy_from_slice(buf[..len]);
+        let len = {
+            let buf = self.buf();
+
+            let len = cmp::min(buf.len(), out.len());
+            out[..len].copy_from_slice(&buf[..len]);
+            len
+        };
 
         self.pos += len;
 
         len
+    }
+
+    /// Push `bytes` to the end of the buffer, growing it if necessary.
+    pub fn push_bytes(&mut self, bytes: &[u8]) {
+        let _ = self.check_cursors();
+
+        let s_len = bytes.len();
+
+        if self.headroom() < s_len {
+            self.grow(s_len * 2);
+        }
+
+        self.buf[s_len..].copy_from_slice(bytes);
+        self.end += s_len;
     }
 
     pub fn consume(&mut self, amt: usize) {
@@ -518,9 +535,22 @@ impl Buffer {
 
 impl Read for Buffer {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        let len = cmp::min(self.buf.len(), out.len());
-        out[..len].copy_from_slice(&self.buf[..len]);
-        Ok(len)
+        Ok(self.copy_to_slice(out))
+    }
+}
+
+impl Write for Buffer {
+    fn write(&mut self, src: &[u8]) -> io::Result<usize> {
+        Ok(self.copy_from_slice(src))
+    }
+
+    fn write_all(&mut self, src: &[u8]) -> io::Result<()> {
+        self.push_bytes(src);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
@@ -586,4 +616,26 @@ impl<R: fmt::Debug> fmt::Debug for Unbuffer<R> {
     }
 }
 
-// RFC: impl<R: BufRead> BufRead for Unbuffer<R> ?
+/// Copy data between a `BufRead` and a `Write` without an intermediate buffer.
+///
+/// Retries on interrupts.
+pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
+    let mut total_copied = 0;
+
+    loop {
+        let copied = match b.fill_buf().and_then(|buf| w.write(buf)) {
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+            Ok(buf) => buf,
+        };
+
+        if copied == 0 { break; }
+
+        b.consume(copied);
+
+        total_copied += copied as u64;
+    }
+
+    Ok(total_copied)
+}
+
