@@ -208,6 +208,8 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         }
     }
 
+    
+
     #[inline]
     fn should_read(&self) -> bool {
         self.read_strat.should_read(&self.buf)
@@ -230,6 +232,20 @@ impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         }
         
         self.buf.read_from(&mut self.inner)
+    }
+}
+
+impl<R: Read, Rs, Ms> BufReader<R, Rs, Ms> {
+    /// Box the inner reader without losing data.
+    pub fn boxed<'a>(self) -> BufReader<Box<Read + 'a>, Rs, Ms> where R: 'a {
+        let inner: Box<Read + 'a> = Box::new(self.inner);
+        
+        BufReader {
+            inner: inner,
+            buf: self.buf,
+            read_strat: self.read_strat,
+            move_strat: self.move_strat,
+        }
     }
 }
 
