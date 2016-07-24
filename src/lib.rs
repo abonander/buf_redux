@@ -471,7 +471,7 @@ impl Buffer {
         len
     }
 
-    pub fn write_to(&mut self, wrt: &mut Write) -> io::Result<usize> {
+    pub fn write_to<W: Write>(&mut self, wrt: &mut W) -> io::Result<usize> {
         let _ = self.check_cursors();
 
         let written = try!(wrt.write(self.buf()));
