@@ -44,7 +44,8 @@
 //!
 //! See the `BufReader` type in this crate for more info.
 #![warn(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(io))]
+#![cfg_attr(feature = "nightly", feature(specialization))]
+#![cfg_attr(all(test, feature = "nightly"), feature(io))]
 
 use std::io::prelude::*;
 use std::io::SeekFrom;
@@ -59,7 +60,9 @@ use self::strategy::{MoveStrategy, ReadStrategy, IfEmpty, AtEndLessThan1k};
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
+/// The default `ReadStrategy` for this crate.
 pub type DefaultReadStrategy = IfEmpty;
+/// The default `MoveStrategy` for this crate.
 pub type DefaultMoveStrategy = AtEndLessThan1k;
 
 /// The *pièce de résistance:* a drop-in replacement for `std::io::BufReader` with more functionality.
@@ -103,15 +106,12 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
     pub fn with_cap_and_strategies(inner: R, cap: usize, rs: Rs, ms: Ms) -> Self {
-        let mut self_ = BufReader { 
+        BufReader {
             inner: inner,
-            buf: Buffer::new(),
+            buf: Buffer::with_capacity(cap),
             read_strat: rs,
             move_strat: ms,
-        };
-
-        self_.grow(cap);
-        self_
+        }
     }
 
     /// Apply a new `MoveStrategy` to this `BufReader`, returning the transformed type.
@@ -134,10 +134,14 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         }
     }
 
-    /// Accessor for updating the `MoveStrategy` in-place. Must be the same type.
+    /// Accessor for updating the `MoveStrategy` in-place.
+    ///
+    /// If you want to change the type, use `.move_strategy()`.
     pub fn move_strategy_mut(&mut self) -> &mut Ms { &mut self.move_strat }
 
-    /// Accessor for updating the `ReadStrategy` in-place. Must be the same type.
+    /// Accessor for updating the `ReadStrategy` in-place.
+    ///
+    /// If you want to change the type, use `.read_strategy()`.
     pub fn read_strategy_mut(&mut self) -> &mut Rs { &mut self.read_strat }
 
     /// Move data to the start of the buffer, making room at the end for more 
@@ -153,7 +157,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// This should not be called frequently as each call will incur a 
     /// reallocation and a zeroing of the new memory.
     pub fn grow(&mut self, additional: usize) {
-        self.buf.grow(additional);    
+        self.buf.grow(additional);
     }
 
     // RFC: pub fn shrink(&mut self, new_len: usize) ?
@@ -215,6 +219,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         self.read_strat.should_read(&self.buf)
     }
 
+    #[inline]
     fn should_move(&self) -> bool {
         self.move_strat.should_move(&self.buf)
     }
@@ -340,6 +345,9 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
     }
 }
 
+/// A deque-like datastructure for managing bytes.
+///
+/// Supports interacting via I/O traits like `Read` and `Write`, and direct access.
 pub struct Buffer {
     buf: Vec<u8>,
     pos: usize,
@@ -347,26 +355,22 @@ pub struct Buffer {
 }
 
 impl Buffer {
+    /// Create a new buffer with a default capacity.
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_BUF_SIZE)
     }
 
+    /// Create a new buffer with the given capacity.
+    ///
+    /// If the `Vec` ends up with extra capacity, `Buffer` will use all of it.
     pub fn with_capacity(cap: usize) -> Self {
-        let mut buf = vec![0; cap];
-        let cap = buf.capacity();
-        buf.resize(cap, 0);
-
-        Buffer {
-            buf: buf,
-            pos: 0,
-            end: 0,
-        }
-    }
-
-    pub unsafe fn with_capacity_unzeroed(cap: usize) -> Self {
         let mut buf = Vec::with_capacity(cap);
+
+        // Ensure we're using full capacity of the vector
         let cap = buf.capacity();
-        buf.set_len(cap);
+        unsafe {
+            buf.set_len(cap);
+        }
 
         Buffer {
             buf: buf,
@@ -375,75 +379,80 @@ impl Buffer {
         }
     }
 
+    /// Return the number of bytes available to be read from this buffer.
+    ///
+    /// Equivalent to `self.buf().len()`.
     pub fn available(&self) -> usize {
         self.end - self.pos
     }
 
+    /// Return the number of bytes that can be read into this buffer before it needs
+    /// to grow or the data in the buffer needs to be moved.
     pub fn headroom(&self) -> usize {
         self.buf.len() - self.end
     }
 
+    /// Return the total capacity of this buffer.
     pub fn capacity(&self) -> usize {
         self.buf.len()
     }
 
+    /// Returns `true` if there are no bytes in the buffer, false otherwise.
     pub fn is_empty(&self) -> bool {
         self.available() == 0
     }
 
-    pub unsafe fn grow_unzeroed(&mut self, additional: usize) {
-        self.check_cursors();
-
+    /// Grow the buffer by `additional` bytes.
+    ///
+    /// ###Panics
+    /// If `self.capacity() + additional` overflows.
+    pub fn grow(&mut self, additional: usize) {
+        // This looks like we're just reimplementing `Vec::reserve_exact()` but
+        // this way we can save the allocator from unconditionally copying the bytes in the old
+        // allocation to the new one.
+        //
+        // Unfortunately, it doesn't allow us to resize the buffer in-place.
         let new_len = self.buf.len().checked_add(additional)
             .expect("Overflow calculating new capacity");
 
         let buf = mem::replace(&mut self.buf, Vec::with_capacity(new_len));
         let cap = self.buf.capacity();
-            
-        self.buf.set_len(cap);
 
-        // WTB smarter borrowing for temporaries
-        let avail = self.available();
-
-        self.buf[.. avail]
-            .copy_from_slice(&buf[self.pos .. self.end]);
-
-        self.end -= self.pos;
-        self.pos = 0;
-    }
-
-    pub fn grow(&mut self, additional: usize) {
-        self.check_cursors();
-
-        let new_len = self.buf.len().checked_add(additional)
-            .expect("Overflow calculating new capacity");
-
-        let buf = mem::replace(&mut self.buf, vec![0; new_len]);
-
-        let cap = self.buf.capacity();
-        self.buf.resize(cap, 0);
+        unsafe {
+            self.buf.set_len(cap);
+        }
 
         let avail = self.available();
 
-        self.buf[.. avail]
-            .copy_from_slice(&buf[self.pos .. self.end]);
+        if !self.check_cursors() {
+            // WTB smarter borrowing for temporaries
 
-        self.end -= self.pos;
-        self.pos = 0;
-    }
+            self.buf[.. avail]
+                .copy_from_slice(&buf[self.pos .. self.end]);
 
-    fn check_cursors(&mut self) -> bool {
-        if self.pos == 0 {
-            false
-        } else if self.pos == self.end {
+            self.end -= self.pos;
             self.pos = 0;
-            self.end = 0;
-            false
-        } else {
-            true
         }
     }
 
+    /// Reset the cursors if there is no data remaining.
+    ///
+    /// Returns true if there is no more potential headroom.
+    fn check_cursors(&mut self) -> bool {
+        if self.pos == 0 {
+            true
+        } else if self.pos == self.end {
+            self.pos = 0;
+            self.end = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Make room in the buffer, moving data down to the beginning if necessary.
+    ///
+    /// Does not grow the buffer or delete unread bytes from it.
     pub fn make_room(&mut self) {
         if self.check_cursors() {
             return;
@@ -460,23 +469,50 @@ impl Buffer {
 
         self.end -= self.pos;
         self.pos = 0;
-
     }            
 
+    /// Get an immutable slice of the available bytes in this buffer.
+    ///
+    /// Call `.consume()` to remove bytes from the beginning of this slice.
     pub fn buf(&self) -> &[u8] { &self.buf[self.pos .. self.end] }
 
+    /// Get a mutable slice representing the available bytes in this buffer.
+    ///
+    /// Call `.consume()` to remove bytes from the beginning of this slice.
     pub fn buf_mut(&mut self) -> &mut [u8] { &mut self.buf[self.pos .. self.end] }
 
+    /// Read from `rdr`, returning the number of bytes read or any errors.
+    ///
+    /// If `<R as TrustRead>::is_trusted()` returns `true`,
+    /// this method can avoid zeroing the head of the buffer.
+    ///
+    /// See the `TrustRead` trait for more information.
+    ///
+    /// ###Panics
+    /// If the returned count from `rdr.read()` overflows the head cursor of this buffer.
     pub fn read_from<R: Read>(&mut self, rdr: &mut R) -> io::Result<usize> {
-        let _ = self.check_cursors();
+        self.check_cursors();
+
+        if !rdr.is_trusted() {
+            unsafe {
+                ptr::write_bytes(&mut self.buf[self.end], 0, self.buf.len() - self.end);
+            }
+        }
 
         let read = try!(rdr.read(&mut self.buf[self.end..]));
-        self.end += cmp::min(self.buf.len(), read);
+
+        let new_end = self.end.checked_add(read).expect("Overflow adding bytes read to self.end");
+
+        self.end = cmp::min(self.buf.len(), new_end);
+
         Ok(read)
     }
 
+    /// Copy from `src` to the head of this buffer. Returns the number of bytes copied.
+    ///
+    /// Will **not** grow the buffer if `src` is larger than `self.headroom()`.
     pub fn copy_from_slice(&mut self, src: &[u8]) -> usize {
-        let _ = self.check_cursors();
+        self.check_cursors();
     
         let len = cmp::min(self.buf.len() - self.end, src.len());
 
@@ -487,16 +523,25 @@ impl Buffer {
         len
     }
 
-    pub fn write_to(&mut self, wrt: &mut Write) -> io::Result<usize> {
-        let _ = self.check_cursors();
+    /// Write bytes from this buffer to `wrt`. Returns the number of bytes written or any errors.
+    ///
+    /// ###Panics
+    /// If the count returned by `wrt.write()` would overflow the tail cursor if added to it.
+    pub fn write_to<W: Write>(&mut self, wrt: &mut W) -> io::Result<usize> {
+        self.check_cursors();
 
         let written = try!(wrt.write(self.buf()));
-        self.pos += cmp::min(written, self.end);
+
+        let new_pos = self.pos.checked_add(written)
+            .expect("Overflow adding bytes written to self.pos");
+
+        self.pos = cmp::min(new_pos, self.end);
         Ok(written)
     }
 
+    /// Copy bytes to `out` from this buffer, returning the number of bytes written.
     pub fn copy_to_slice(&mut self, out: &mut [u8]) -> usize {
-        let _ = self.check_cursors();
+        self.check_cursors();
 
         let len = {
             let buf = self.buf();
@@ -513,7 +558,7 @@ impl Buffer {
 
     /// Push `bytes` to the end of the buffer, growing it if necessary.
     pub fn push_bytes(&mut self, bytes: &[u8]) {
-        let _ = self.check_cursors();
+        self.check_cursors();
 
         let s_len = bytes.len();
 
@@ -525,22 +570,27 @@ impl Buffer {
         self.end += s_len;
     }
 
+    /// Consume `amt` bytes from the tail of this buffer. No more than `self.available()` bytes
+    /// will be consumed.
     pub fn consume(&mut self, amt: usize) {
         let avail = self.available();
 
         if amt == avail {
             self.clear();
         } else {
-            let amt = cmp::min(self.available(), amt);
+            let amt = cmp::min(avail, amt);
             self.pos += amt;
         }
     }
 
+    /// Empty this buffer by resetting the cursors.
     pub fn clear(&mut self) {
         self.pos = 0;
         self.end = 0;
     }
 
+    /// Move the bytes down the beginning of the buffer and take the inner vector, truncated
+    /// to the number of bytes available.
     pub fn into_inner(mut self) -> Vec<u8> {
         self.make_room();
         let avail = self.available();
@@ -597,6 +647,7 @@ impl<R> Unbuffer<R> {
         self.buf.as_ref().map(Buffer::available).unwrap_or(0)
     }
 
+    /// Get a slice over the available bytes in the buffer.
     pub fn buf(&self) -> &[u8] {
         self.buf.as_ref().map_or(&[], Buffer::buf)
     }
@@ -655,3 +706,151 @@ pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
     Ok(total_copied)
 }
 
+/// A trait which `Buffer` can use to determine whether or not
+/// it is safe to elide zeroing of its buffer.
+///
+/// Has a default implementation of `is_trusted()` which always returns `false`.
+///
+/// Use the `nightly` feature to enable specialization, which means this
+/// trait can be implemented for specifically trusted types from the stdlib
+/// and potentially elsewhere.
+///
+/// ###Motivation
+/// As part of its intended operation, `Buffer` can pass a potentially
+/// uninitialized slice of its buffer to `Read::read()`. Untrusted readers could access sensitive
+/// information in this slice, from previous usage of that region of memory,
+/// which has not been overwritten yet. Thus, the uninitialized parts of the buffer need to be zeroed
+/// to prevent unintentional leakage of information.
+///
+/// However, for trusted readers which are known to only write to this slice and not read from it,
+/// such as various types in the stdlib which will pass the slice directly to a syscall,
+/// this zeroing is an unnecessary waste of cycles which the optimizer may or may not elide properly.
+///
+/// This trait helps `Buffer` determine whether or not a particular reader is trustworthy.
+pub unsafe trait TrustRead: Read {
+    /// Return `true` if this reader does not need a zeroed slice passed to `.read()`.
+    fn is_trusted(&self) -> bool;
+}
+
+#[cfg(not(feature = "nightly"))]
+unsafe impl<R: Read> TrustRead for R {
+    /// Default impl which always returns `false`.
+    ///
+    /// Enable the `nightly` feature to specialize this impl for various types.
+    fn is_trusted(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "nightly")]
+pub use nightly::AssertTrustRead;
+
+#[cfg(feature = "nightly")]
+mod nightly {
+    use std::io::{self, Read};
+
+    use super::TrustRead;
+    use strategy::{MoveStrategy, ReadStrategy};
+
+    unsafe impl<R: Read> TrustRead for R {
+        /// Default impl which always returns `false`.
+        default fn is_trusted(&self) -> bool {
+            false
+        }
+    }
+
+    macro_rules! trust{
+        ($($ty:path),+) => (
+            $(unsafe impl $crate::TrustRead for $ty {
+                /// Unconditional impl that returns `true`.
+                fn is_trusted(&self) -> bool { true }
+            })+
+        )
+    }
+
+    trust! {
+        ::std::io::Stdin, ::std::fs::File, ::std::net::TcpStream,
+        ::std::io::Empty, ::Buffer
+    }
+
+    unsafe impl<'a> TrustRead for &'a [u8] {
+        /// Unconditional impl that returns `true`.
+        fn is_trusted(&self) -> bool { true }
+    }
+
+    unsafe impl<'a> TrustRead for ::std::io::StdinLock<'a> {
+        /// Unconditional impl that returns `true`.
+        fn is_trusted(&self) -> bool { true }
+    }
+
+    unsafe impl<T: AsRef<[u8]>> TrustRead for ::std::io::Cursor<T> {
+        /// Unconditional impl that returns `true`.
+        fn is_trusted(&self) -> bool { true }
+    }
+
+    unsafe impl<R: Read> TrustRead for ::std::io::BufReader<R> {
+        /// Returns `self.get_ref().is_trusted()`
+        fn is_trusted(&self) -> bool { self.get_ref().is_trusted() }
+    }
+
+    unsafe impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> TrustRead for ::BufReader<R, Rs, Ms> {
+        /// Returns `self.get_ref().is_trusted()`
+        fn is_trusted(&self) -> bool { self.get_ref().is_trusted() }
+    }
+
+    /// A wrapper for a `Read` type that will unconditionally return `true` for `self.is_trusted()`.
+    ///
+    /// See the `TrustRead` trait for more information.
+    pub struct AssertTrustRead<R>(R);
+
+    impl<R> AssertTrustRead<R> {
+        /// Create a new `AssertTrustRead` wrapping `inner`.
+        ///
+        /// ###Safety
+        /// BecauGse this wrapper will return `true` for `self.is_trusted()`,
+        /// the inner reader may be passed uninitialized memory containing potentially
+        /// sensitive information from previous usage.
+        ///
+        /// Wrapping a reader with this type asserts that the reader will not attempt to access
+        /// the memory passed to `Read::read()`.
+        pub unsafe fn new(inner: R) -> Self {
+            AssertTrustRead(inner)
+        }
+
+        /// Get a reference to the inner reader.
+        pub fn get_ref(&self) -> &R { &self.0 }
+
+        /// Get a mutable reference to the inner reader.
+        ///
+        /// Unlike `BufReader` (from this crate or the stdlib), calling `.read()` through this
+        /// reference cannot cause logical inconsistencies because this wrapper does not take any
+        /// data from the underlying reader.
+        ///
+        /// However, it is best if you use the I/O methods on this wrapper itself, especially with
+        /// `BufReader` or `Buffer` as it allows them to elide zeroing of their buffers.
+        pub fn get_mut(&mut self) -> &mut R { &mut self.0 }
+
+        /// Take the wrapped reader by-value.
+        pub fn into_inner(self) -> R { self.0 }
+    }
+
+    impl<R> AsRef<R> for AssertTrustRead<R> {
+        fn as_ref(&self) -> &R { self.get_ref() }
+    }
+
+    impl<R> AsMut<R> for AssertTrustRead<R> {
+        fn as_mut(&mut self) -> &mut R { self.get_mut() }
+    }
+
+    impl<R: Read> Read for AssertTrustRead<R> {
+        /// Unconditionally calls through to `<R as Read>::read()`.
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            self.0.read(out)
+        }
+    }
+
+    unsafe impl<R: Read> TrustRead for AssertTrustRead<R> {
+        /// Unconditional impl that returns `true`.
+        fn is_trusted(&self) -> bool { true }
+    }
+}
