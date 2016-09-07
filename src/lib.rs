@@ -49,21 +49,20 @@
 
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, fmt, io, mem, ptr};
+use std::{cmp, fmt, io, mem, ops, ptr};
 
 #[cfg(test)]
 mod tests;
 
 pub mod strategy;
 
-use self::strategy::{MoveStrategy, ReadStrategy, IfEmpty, AtEndLessThan1k};
+use self::strategy::{
+    MoveStrategy, DefaultMoveStrategy,
+    ReadStrategy, DefaultReadStrategy,
+    FlushStrategy, DefaultFlushStrategy,
+};
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
-
-/// The default `ReadStrategy` for this crate.
-pub type DefaultReadStrategy = IfEmpty;
-/// The default `MoveStrategy` for this crate.
-pub type DefaultMoveStrategy = AtEndLessThan1k;
 
 /// The *pièce de résistance:* a drop-in replacement for `std::io::BufReader` with more functionality.
 ///
@@ -155,7 +154,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// 
     /// ##Note
     /// This should not be called frequently as each call will incur a 
-    /// reallocation and a zeroing of the new memory.
+    /// reallocation.
     pub fn grow(&mut self, additional: usize) {
         self.buf.grow(additional);
     }
@@ -211,8 +210,6 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
             buf: Some(self.buf),
         }
     }
-
-    
 
     #[inline]
     fn should_read(&self) -> bool {
@@ -345,13 +342,187 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
     }
 }
 
+/// A type wrapping `Option` which provides more convenient access when the `Some` case is more
+/// common.
+struct AssertSome<T>(Option<T>);
+
+impl<T> AssertSome<T> {
+    fn new(val: T) -> Self {
+        AssertSome(Some(val))
+    }
+
+    fn take(this: &mut Self) -> T {
+        this.0.take().expect("Called AssertSome::take() more than once")
+    }
+
+    fn take_self(this: &mut Self) -> Self {
+        AssertSome(this.0.take())
+    }
+
+    fn is_some(this: &Self) -> bool {
+        this.0.is_some()
+    }
+}
+
+const ASSERT_DEREF_ERR: &'static str = "Attempt to access value of AssertSome after calling AssertSome::take()";
+
+impl<T> ops::Deref for AssertSome<T> {
+    type Target = T;
+    
+    fn deref(&self) -> &T { 
+        self.0.as_ref().expect(ASSERT_DEREF_ERR)
+    }
+}
+
+impl<T> ops::DerefMut for AssertSome<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.0.as_mut().expect(ASSERT_DEREF_ERR)
+    }
+}
+
+/// A drop-in replacement for `BufWriter` with more control over the buffer size and the flushing
+/// strategy.
+pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
+    inner: AssertSome<W>,
+    buf: Buffer,
+    flush_strat: Fs,
+    panicked: bool,
+}
+
+impl<W: Write> BufWriter<W, DefaultFlushStrategy> {
+    pub fn new(inner: W) -> Self {
+        Self::with_strategy(inner, Default::default())
+    }
+
+    pub fn with_capacity(capacity: usize, inner: W) -> Self {
+        Self::with_capacity_and_strategy(capacity, inner, Default::default())
+    }
+}
+
+impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
+    pub fn with_strategy(inner: W, flush_strat: Fs) -> Self {
+        Self::with_capacity_and_strategy(DEFAULT_BUF_SIZE, inner, flush_strat)
+    }
+
+    pub fn with_capacity_and_strategy(capacity: usize, inner: W, flush_strat: Fs) -> Self {
+        let buf = Buffer::with_capacity(capacity);
+
+        BufWriter {
+            inner: AssertSome::new(inner),
+            buf: buf,
+            flush_strat: flush_strat,
+            panicked: false,
+        }
+    }
+
+    pub fn flush_strategy<Fs_: FlushStrategy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
+        BufWriter {
+            inner: AssertSome::take_self(&mut self.inner),
+            buf: mem::replace(&mut self.buf, Buffer::with_capacity(0)),
+            flush_strat: flush_strat,
+            panicked: self.panicked,
+        }
+    }
+
+    /// Get a reference to the inner writer.
+    pub fn get_ref(&self) -> &W {
+        &self.inner
+    }
+
+    /// Get a mutable reference to the inner writer.
+    ///
+    /// ###Note
+    /// If the buffer has not been flushed, writing directly to the inner type will cause
+    /// data inconsistency.
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
+    /// Get the capacty of the inner buffer.
+    pub fn capacity(&self) -> usize {
+        self.buf.capacity()
+    }
+    
+    /// Grow the internal buffer by *at least* `additional` bytes. May not be
+    /// quite exact due to implementation details of the buffer's allocator.
+    /// 
+    /// ##Note
+    /// This should not be called frequently as each call will incur a 
+    /// reallocation.
+    pub fn grow(&mut self, additional: usize) {
+        self.buf.grow(additional);
+    }
+
+
+    fn flush_buf(&mut self) -> io::Result<()> {
+        self.panicked = true;
+        let ret = self.buf.write_all(&mut *self.inner);
+        self.panicked = false;
+        ret
+    }
+}
+
+impl<W: Write, Fs: FlushStrategy> Write for BufWriter<W, Fs> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.flush_strat.should_flush(&self.buf, buf.len()) {
+            try!(self.flush_buf());
+        }
+
+        if buf.len() > self.buf.capacity() {
+            self.panicked = true;
+            let ret = self.inner.write(buf);
+            self.panicked = false;
+            ret
+        } else {
+            Ok(self.buf.copy_from_slice(buf))
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        try!(self.flush_buf());
+        self.inner.flush()
+    }
+}
+
+impl<W: Write + Seek, Fs: FlushStrategy> Seek for BufWriter<W, Fs> {
+    /// Seek to the offset, in bytes, in the underlying writer.
+    ///
+    /// Seeking always writes out the internal buffer before seeking.
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.flush_buf().and_then(|_| self.get_mut().seek(pos))
+    }
+}
+
+impl<W: fmt::Debug + Write, Fs: FlushStrategy> fmt::Debug for BufWriter<W, Fs> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("buf_redux::BufWriter")
+            .field("writer", &*self.inner)
+            .field("capacity", &self.capacity())
+            .field("flush_strategy", &self.flush_strat)
+            .finish()
+
+    }
+}
+
+impl<W: Write, Fs: FlushStrategy> Drop for BufWriter<W, Fs> {
+    fn drop(&mut self) {
+        if AssertSome::is_some(&self.inner) && !self.panicked {
+            // dtors should not panic, so we ignore a failed flush
+            let _r = self.flush_buf();
+        }
+    }
+}
+
 /// A deque-like datastructure for managing bytes.
 ///
 /// Supports interacting via I/O traits like `Read` and `Write`, and direct access.
 pub struct Buffer {
+    // FIXME: when `RawVec` becomes stable, use it to have more control over resizing,
+    // as well as eliminating the redundant length field.
     buf: Vec<u8>,
     pos: usize,
     end: usize,
+    zeroed: usize,
 }
 
 impl Buffer {
@@ -376,6 +547,7 @@ impl Buffer {
             buf: buf,
             pos: 0,
             end: 0,
+            zeroed: 0,
         }
     }
 
@@ -406,32 +578,20 @@ impl Buffer {
     ///
     /// ###Panics
     /// If `self.capacity() + additional` overflows.
-    pub fn grow(&mut self, additional: usize) {
-        // This looks like we're just reimplementing `Vec::reserve_exact()` but
-        // this way we can save the allocator from unconditionally copying the bytes in the old
-        // allocation to the new one.
-        //
-        // Unfortunately, it doesn't allow us to resize the buffer in-place.
-        let new_len = self.buf.len().checked_add(additional)
-            .expect("Overflow calculating new capacity");
+    pub fn grow(&mut self, additional: usize) { 
+        self.check_cursors();
 
-        let buf = mem::replace(&mut self.buf, Vec::with_capacity(new_len));
+        // FIXME use `RawVec` when stable to determine if in-place growth is possible,
+        // or if not, use it to lump reallocating together with `.make_room()`.
+        // This could be possible with the `nightly` feature but may add too much complexity and
+        // maintenance burden.
+
+        self.buf.reserve_exact(additional);
+
         let cap = self.buf.capacity();
 
         unsafe {
             self.buf.set_len(cap);
-        }
-
-        let avail = self.available();
-
-        if !self.check_cursors() {
-            // WTB smarter borrowing for temporaries
-
-            self.buf[.. avail]
-                .copy_from_slice(&buf[self.pos .. self.end]);
-
-            self.end -= self.pos;
-            self.pos = 0;
         }
     }
 
@@ -483,7 +643,7 @@ impl Buffer {
 
     /// Read from `rdr`, returning the number of bytes read or any errors.
     ///
-    /// If `<R as TrustRead>::is_trusted()` returns `true`,
+    /// If `<R as TrustRead>::is_trusted(rdr)` returns `true`,
     /// this method can avoid zeroing the head of the buffer.
     ///
     /// See the `TrustRead` trait for more information.
@@ -493,10 +653,14 @@ impl Buffer {
     pub fn read_from<R: Read>(&mut self, rdr: &mut R) -> io::Result<usize> {
         self.check_cursors();
 
-        if !rdr.is_trusted() {
+        if !rdr.is_trusted() && self.zeroed < self.buf.len() {
+            let start = cmp::max(self.end, self.zeroed);
+
             unsafe {
-                ptr::write_bytes(&mut self.buf[self.end], 0, self.buf.len() - self.end);
+                ptr::write_bytes(&mut self.buf[start], 0, self.buf.len() - start);
             }
+
+            self.zeroed = self.buf.len();
         }
 
         let read = try!(rdr.read(&mut self.buf[self.end..]));
@@ -539,6 +703,24 @@ impl Buffer {
         Ok(written)
     }
 
+    /// Write all bytes in this buffer, ignoring interrupts. Continues writing until the buffer is
+    /// empty or an error is returned.
+    ///
+    /// ###Panics
+    /// If `self.write_to(wrt)` panics.
+    pub fn write_all<W: Write>(&mut self, wrt: &mut W) -> io::Result<()> {
+        while self.available() > 0 {
+            match self.write_to(wrt) {
+                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "Buffer::write_all() got zero-sized write")),
+                Ok(_) => (),
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Copy bytes to `out` from this buffer, returning the number of bytes written.
     pub fn copy_to_slice(&mut self, out: &mut [u8]) -> usize {
         self.check_cursors();
@@ -575,10 +757,9 @@ impl Buffer {
     pub fn consume(&mut self, amt: usize) {
         let avail = self.available();
 
-        if amt == avail {
+        if amt >= avail {
             self.clear();
         } else {
-            let amt = cmp::min(avail, amt);
             self.pos += amt;
         }
     }
@@ -596,27 +777,6 @@ impl Buffer {
         let avail = self.available();
         self.buf.truncate(avail);
         self.buf
-    }
-}
-
-impl Read for Buffer {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        Ok(self.copy_to_slice(out))
-    }
-}
-
-impl Write for Buffer {
-    fn write(&mut self, src: &[u8]) -> io::Result<usize> {
-        Ok(self.copy_from_slice(src))
-    }
-
-    fn write_all(&mut self, src: &[u8]) -> io::Result<()> {
-        self.push_bytes(src);
-        Ok(())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
     }
 }
 
@@ -661,7 +821,7 @@ impl<R> Unbuffer<R> {
 impl<R: Read> Read for Unbuffer<R> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         if let Some(ref mut buf) = self.buf.as_mut() {
-            let read = buf.read(out).unwrap();
+            let read = buf.copy_to_slice(out);
 
             if out.len() != 0 && read != 0 {
                 return Ok(read);

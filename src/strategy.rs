@@ -7,6 +7,13 @@ use super::Buffer;
 
 use std::fmt;
 
+/// The default `ReadStrategy` for this crate.
+pub type DefaultReadStrategy = IfEmpty;
+/// The default `MoveStrategy` for this crate.
+pub type DefaultMoveStrategy = AtEndLessThan1k;
+/// The default `FlushStrategy` for this crate.
+pub type DefaultFlushStrategy = WhenFull;
+
 /// Trait for types which `BufReader` can consult to determine when it should read more data into the
 /// buffer.
 pub trait ReadStrategy: Default + fmt::Debug {
@@ -88,5 +95,42 @@ impl MoveStrategy for NeverMove {
     #[inline]
     fn should_move(&self, _: &Buffer) -> bool {
         false
+    }
+}
+
+/// A trait which tells `BufWriter` when to flush.
+pub trait FlushStrategy: Default + fmt::Debug {
+    /// Return `true` if the buffer should be flused.
+    fn should_flush(&self, buf: &Buffer, incoming: usize) -> bool;
+}
+
+/// Flush the buffer if there is no more headroom. Equivalent to the behavior or
+/// `std::io::BufWriter`.
+#[derive(Debug, Default)]
+pub struct WhenFull;
+
+impl FlushStrategy for WhenFull {
+    fn should_flush(&self, buf: &Buffer, incoming: usize) -> bool {
+        buf.headroom() < incoming
+    }
+}
+
+/// Flush the buffer if it contains at least the given number of bytes.
+#[derive(Debug, Default)]
+pub struct FlushAtLeast(pub usize);
+
+impl FlushStrategy for FlushAtLeast {
+    fn should_flush(&self, buf: &Buffer, _: usize) -> bool {
+        buf.available() > self.0
+    }
+}
+
+/// Flush the buffer if it contains at least `8Kb (8192b)`.
+#[derive(Debug, Default)]
+pub struct FlushAtLeast8k;
+
+impl FlushStrategy for FlushAtLeast8k {
+    fn should_flush(&self, buf: &Buffer, _: usize) -> bool {
+        buf.available() > 8192
     }
 }
