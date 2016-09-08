@@ -9,9 +9,11 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+
+
 use std::io::prelude::*;
 use std::io::{self, SeekFrom};
-use super::BufReader;
+use super::{BufReader, BufWriter};
 
 /// A dummy reader intended at testing short-reads propagation.
 pub struct ShortReader {
@@ -209,3 +211,97 @@ fn test_chars() {
     assert!(it.next().is_none());
 }
 
+// BufWriter tests
+#[test]
+fn test_buffered_writer() {
+    let inner = Vec::new();
+    let mut writer = BufWriter::with_capacity(2, inner);
+
+    assert_eq!(writer.capacity(), 2);
+
+    writer.write(&[0, 1]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1]);
+
+    writer.write(&[2]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1]);
+
+    writer.write(&[3]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1]);
+
+    writer.flush().unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 2, 3]);
+
+    writer.write(&[4]).unwrap();
+    writer.write(&[5]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 2, 3]);
+
+    writer.write(&[6]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5]);
+
+    writer.write(&[7, 8]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+
+    writer.write(&[9, 10, 11]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    writer.flush().unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+}
+
+#[test]
+fn test_buffered_writer_inner_flushes() {
+    let mut w = BufWriter::with_capacity(3, Vec::new());
+    w.write(&[0, 1]).unwrap();
+    assert_eq!(*w.get_ref(), []);
+    let w = w.into_inner().unwrap();
+    assert_eq!(w, [0, 1]);
+}
+
+#[test]
+fn test_buffered_writer_seek() {
+    let mut w = BufWriter::with_capacity(3, io::Cursor::new(Vec::new()));
+    w.write_all(&[0, 1, 2, 3, 4, 5]).unwrap();
+    w.write_all(&[6, 7]).unwrap();
+    assert_eq!(w.seek(SeekFrom::Current(0)).ok(), Some(8));
+    assert_eq!(&w.get_ref().get_ref()[..], &[0, 1, 2, 3, 4, 5, 6, 7][..]);
+    assert_eq!(w.seek(SeekFrom::Start(2)).ok(), Some(2));
+    w.write_all(&[8, 9]).unwrap();
+    assert_eq!(&w.into_inner().unwrap().into_inner()[..], &[0, 1, 8, 9, 4, 5, 6, 7]);
+}
+
+#[cfg(feature = "nightly")]
+mod bench {
+    extern crate test;
+
+    use ::{BufWriter, BufReader};
+
+    use std::io;
+
+    #[bench]
+    fn bench_buffered_reader(b: &mut test::Bencher) {
+        b.iter(|| {
+            BufReader::new(io::empty())
+        });
+    }
+
+    #[bench]
+    fn bench_std_buffered_reader(b: &mut test::Bencher) {
+        b.iter(|| {
+            io::BufReader::new(io::empty())
+        });
+    }
+
+    #[bench]
+    fn bench_buffered_writer(b: &mut test::Bencher) {
+        b.iter(|| {
+            BufWriter::new(io::sink())
+        });
+    }
+
+    #[bench]
+    fn bench_std_buffered_writer(b: &mut test::Bencher) {
+        b.iter(|| {
+            io::BufWriter::new(io::sink())
+        });
+    }
+}

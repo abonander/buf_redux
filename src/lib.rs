@@ -45,11 +45,12 @@
 //! See the `BufReader` type in this crate for more info.
 #![warn(missing_docs)]
 #![cfg_attr(feature = "nightly", feature(specialization))]
-#![cfg_attr(all(test, feature = "nightly"), feature(io))]
+#![cfg_attr(all(test, feature = "nightly"), feature(io, test))]
 
+use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, fmt, io, mem, ops, ptr};
+use std::{cmp, error, fmt, io, mem, ops, ptr};
 
 #[cfg(test)]
 mod tests;
@@ -453,6 +454,12 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
         self.buf.grow(additional);
     }
 
+    pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
+        match self.flush_buf() {
+            Err(e) => Err(IntoInnerError(self, e)),
+            Ok(()) => Ok(AssertSome::take(&mut self.inner)),
+        }
+    }
 
     fn flush_buf(&mut self) -> io::Result<()> {
         self.panicked = true;
@@ -468,7 +475,7 @@ impl<W: Write, Fs: FlushStrategy> Write for BufWriter<W, Fs> {
             try!(self.flush_buf());
         }
 
-        if buf.len() > self.buf.capacity() {
+        if buf.len() >= self.buf.capacity() {
             self.panicked = true;
             let ret = self.inner.write(buf);
             self.panicked = false;
@@ -510,6 +517,41 @@ impl<W: Write, Fs: FlushStrategy> Drop for BufWriter<W, Fs> {
             // dtors should not panic, so we ignore a failed flush
             let _r = self.flush_buf();
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoInnerError<W>(pub W, pub io::Error);
+
+impl<W> IntoInnerError<W> {
+    pub fn error(&self) -> &io::Error {
+        &self.1
+    }
+
+    pub fn into_inner(self) -> W {
+        self.0
+    }
+}
+
+impl<W> Into<io::Error> for IntoInnerError<W> {
+    fn into(self) -> io::Error {
+        self.1
+    }
+}
+
+impl<W: Any + Send + fmt::Debug> error::Error for IntoInnerError<W> {
+    fn description(&self) -> &str {
+        error::Error::description(self.error())
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        Some(&self.1)
+    }
+}
+
+impl<W> fmt::Display for IntoInnerError<W> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.error().fmt(f)
     }
 }
 
@@ -680,7 +722,7 @@ impl Buffer {
     
         let len = cmp::min(self.buf.len() - self.end, src.len());
 
-        self.buf[self.end..].copy_from_slice(&src[..len]);
+        self.buf[self.end..self.end + len].copy_from_slice(&src[..len]);
 
         self.end += len;
 
@@ -930,7 +972,7 @@ mod nightly {
 
     trust! {
         ::std::io::Stdin, ::std::fs::File, ::std::net::TcpStream,
-        ::std::io::Empty, ::Buffer
+        ::std::io::Empty
     }
 
     unsafe impl<'a> TrustRead for &'a [u8] {
