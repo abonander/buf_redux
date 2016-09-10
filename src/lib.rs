@@ -47,10 +47,12 @@
 #![cfg_attr(feature = "nightly", feature(specialization))]
 #![cfg_attr(all(test, feature = "nightly"), feature(io, test))]
 
+extern crate safemem;
+
 use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, error, fmt, io, mem, ops, ptr};
+use std::{cmp, error, fmt, io, mem, ops};
 
 #[cfg(test)]
 mod tests;
@@ -391,20 +393,24 @@ pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
 }
 
 impl<W: Write> BufWriter<W, DefaultFlushStrategy> {
+    /// Wrap `inner` with the default buffer capacity and flush strategy.
     pub fn new(inner: W) -> Self {
         Self::with_strategy(inner, Default::default())
     }
 
+    /// Wrap `inner` with the given buffer capacity and the default flush strategy.
     pub fn with_capacity(capacity: usize, inner: W) -> Self {
         Self::with_capacity_and_strategy(capacity, inner, Default::default())
     }
 }
 
 impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
+    /// Wrap `inner` with the default buffer capacity and given flush strategy
     pub fn with_strategy(inner: W, flush_strat: Fs) -> Self {
         Self::with_capacity_and_strategy(DEFAULT_BUF_SIZE, inner, flush_strat)
     }
 
+    /// Wrap `inner` with the given buffer capacity and flush strategy.
     pub fn with_capacity_and_strategy(capacity: usize, inner: W, flush_strat: Fs) -> Self {
         let buf = Buffer::with_capacity(capacity);
 
@@ -416,6 +422,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
         }
     }
 
+    /// Set a new `FlushStrategy`, returning the transformed type.
     pub fn flush_strategy<Fs_: FlushStrategy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
         BufWriter {
             inner: AssertSome::take_self(&mut self.inner),
@@ -423,6 +430,11 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
             flush_strat: flush_strat,
             panicked: self.panicked,
         }
+    }
+
+    /// Mutate the current flush strategy.
+    pub fn flush_strategy_mut(&mut self) -> &mut Fs {
+        &mut self.flush_strat
     }
 
     /// Get a reference to the inner writer.
@@ -454,6 +466,8 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
         self.buf.grow(additional);
     }
 
+    /// Flush the buffer and unwrap, returning the inner writer on success,
+    /// or a type wrapping `self` plus the error otherwise.
     pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
         match self.flush_buf() {
             Err(e) => Err(IntoInnerError(self, e)),
@@ -520,14 +534,18 @@ impl<W: Write, Fs: FlushStrategy> Drop for BufWriter<W, Fs> {
     }
 }
 
+/// The error type for `BufWriter::into_inner()`,
+/// contains the `BufWriter` as well as the error that occurred.
 #[derive(Debug)]
 pub struct IntoInnerError<W>(pub W, pub io::Error);
 
 impl<W> IntoInnerError<W> {
+    /// Get the error
     pub fn error(&self) -> &io::Error {
         &self.1
     }
 
+    /// Take the writer.
     pub fn into_inner(self) -> W {
         self.0
     }
@@ -659,15 +677,10 @@ impl Buffer {
         if self.check_cursors() {
             return;
         }
-        
-        let src = self.buf[self.pos..].as_ptr();
-        let dest = self.buf.as_mut_ptr();
 
+        let copy_amt = self.available();
         // Guaranteed lowering to memmove.
-        // FIXME: Replace with a safe implementation when one becomes available.
-        unsafe {
-            ptr::copy(src, dest, self.end - self.pos);
-        }
+        safemem::copy(&mut self.buf, self.pos, 0, copy_amt);
 
         self.end -= self.pos;
         self.pos = 0;
@@ -698,9 +711,7 @@ impl Buffer {
         if !rdr.is_trusted() && self.zeroed < self.buf.len() {
             let start = cmp::max(self.end, self.zeroed);
 
-            unsafe {
-                ptr::write_bytes(&mut self.buf[start], 0, self.buf.len() - start);
-            }
+            safemem::write_bytes(&mut self.buf[start..], 0);
 
             self.zeroed = self.buf.len();
         }
@@ -954,6 +965,7 @@ mod nightly {
     use super::TrustRead;
     use strategy::{MoveStrategy, ReadStrategy};
 
+    // ===== TrustRead impls =====
     unsafe impl<R: Read> TrustRead for R {
         /// Default impl which always returns `false`.
         default fn is_trusted(&self) -> bool {
@@ -972,7 +984,7 @@ mod nightly {
 
     trust! {
         ::std::io::Stdin, ::std::fs::File, ::std::net::TcpStream,
-        ::std::io::Empty
+        ::std::io::Empty, ::std::io::Repeat
     }
 
     unsafe impl<'a> TrustRead for &'a [u8] {
@@ -1009,7 +1021,7 @@ mod nightly {
         /// Create a new `AssertTrustRead` wrapping `inner`.
         ///
         /// ###Safety
-        /// BecauGse this wrapper will return `true` for `self.is_trusted()`,
+        /// Because this wrapper will return `true` for `self.is_trusted()`,
         /// the inner reader may be passed uninitialized memory containing potentially
         /// sensitive information from previous usage.
         ///
