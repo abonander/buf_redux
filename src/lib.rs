@@ -9,18 +9,27 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-//! A drop-in replacement for `std::io::BufReader` with more functionality.
+//! Drop-in replacements for buffered I/O types in `std::io`.
 //!
-//! Method names/signatures and implemented traits are unchanged from `std::io::BufReader`, making replacement as simple as swapping the import of the type:
+//! These replacements retain the method names/signatures and implemented traits of their stdlib
+//! counterparts, making replacement as simple as swapping the import of the type:
 //!
+//! ### `BufReader`:
 //! ```notest
 //! - use std::io::BufReader;
 //! + extern crate buf_redux;
 //! + use buf_redux::BufReader;
 //! ```
+//! ### `BufReader`:
+//! ```notest
+//! - use std::io::BufWriter;
+//! + extern crate buf_redux;
+//! + use buf_redux::BufWriter;
+//! ```
+//!
 //! ### More Direct Control
 //!
-//! Provides methods to:
+//! Both `BufReader` and `BufWriter` provide methods to:
 //!
 //! * Access the buffer through an `&`-reference without performing I/O
 //! * Force unconditional reads into the buffer
@@ -30,7 +39,8 @@
 //! * Consume the `BufReader` without losing data
 //! * Get inner reader and trimmed buffer with the remaining data
 //! * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
-//! *
+//!
+//! `BufReader` features:
 //!
 //! ### More Sensible and Customizable Buffering Behavior
 //! * Tune the behavior of the buffer to your specific use-case using the types in the [`strategy`
@@ -52,10 +62,13 @@ extern crate safemem;
 use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, error, fmt, io, mem, ops};
+use std::{cmp, error, fmt, io, ops};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "nightly")]
+mod nightly;
 
 pub mod strategy;
 
@@ -67,7 +80,7 @@ use self::strategy::{
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
-/// The *pièce de résistance:* a drop-in replacement for `std::io::BufReader` with more functionality.
+/// A drop-in replacement for `std::io::BufReader` with more functionality.
 ///
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
@@ -173,7 +186,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
 
     /// Get the current number of bytes available in the buffer.
     pub fn available(&self) -> usize {
-        self.buf.available()
+        self.buf.buffered()
     }
 
     /// Get the total buffer capacity.
@@ -191,12 +204,12 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// data has likely already been moved into the buffer.
     pub fn get_mut(&mut self) -> &mut R { &mut self.inner }
 
-    /// Consumes `self` and returns the inner reader only.
+    /// Consume `self` and return the inner reader only.
     pub fn into_inner(self) -> R {
         self.inner
     }
 
-    /// Consumes `self` and returns both the underlying reader and the buffer, 
+    /// Consume `self` and return both the underlying reader and the buffer,
     /// with the data moved to the beginning and the length truncated to contain
     /// only valid data.
     ///
@@ -205,7 +218,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         (self.inner, self.buf.into_inner())
     }
 
-    /// Consumes `self` and returns an adapter which implements `Read` and will 
+    /// Consume `self` and return an adapter which implements `Read` and will
     /// empty the buffer before reading directly from the underlying reader.
     pub fn unbuffer(self) -> Unbuffer<R> {
         Unbuffer {
@@ -383,11 +396,11 @@ impl<T> ops::DerefMut for AssertSome<T> {
     }
 }
 
-/// A drop-in replacement for `BufWriter` with more control over the buffer size and the flushing
+/// A drop-in replacement for `std::io::BufWriter` with more control over the buffer size and the flushing
 /// strategy.
 pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
     inner: AssertSome<W>,
-    buf: Buffer,
+    buf: AssertSome<Buffer>,
     flush_strat: Fs,
     panicked: bool,
 }
@@ -416,7 +429,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
 
         BufWriter {
             inner: AssertSome::new(inner),
-            buf: buf,
+            buf: AssertSome::new(buf),
             flush_strat: flush_strat,
             panicked: false,
         }
@@ -426,7 +439,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     pub fn flush_strategy<Fs_: FlushStrategy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
         BufWriter {
             inner: AssertSome::take_self(&mut self.inner),
-            buf: mem::replace(&mut self.buf, Buffer::with_capacity(0)),
+            buf: AssertSome::take_self(&mut self.buf),
             flush_strat: flush_strat,
             panicked: self.panicked,
         }
@@ -455,7 +468,12 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     pub fn capacity(&self) -> usize {
         self.buf.capacity()
     }
-    
+
+    /// Get the number of bytes currently in the buffer.
+    pub fn buffered(&self) -> usize {
+        self.buf.buffered()
+    }
+
     /// Grow the internal buffer by *at least* `additional` bytes. May not be
     /// quite exact due to implementation details of the buffer's allocator.
     /// 
@@ -473,6 +491,20 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
             Err(e) => Err(IntoInnerError(self, e)),
             Ok(()) => Ok(AssertSome::take(&mut self.inner)),
         }
+    }
+
+    /// Flush the buffer and unwrap, returning the inner writer and
+    /// any error encountered during flushing.
+    pub fn into_inner_with_err(mut self) -> (W, Option<io::Error>) {
+        let err = self.flush_buf().err();
+        (AssertSome::take(&mut self.inner), err)
+    }
+
+    /// Consume `self` and return both the underlying writer and the buffer,
+    /// with the data moved to the beginning and the length truncated to contain
+    /// only valid data.
+    pub fn into_inner_with_buf(mut self) -> (W, Vec<u8>){
+        (AssertSome::take(&mut self.inner), AssertSome::take(&mut self.buf).into_inner())
     }
 
     fn flush_buf(&mut self) -> io::Result<()> {
@@ -521,7 +553,6 @@ impl<W: fmt::Debug + Write, Fs: FlushStrategy> fmt::Debug for BufWriter<W, Fs> {
             .field("capacity", &self.capacity())
             .field("flush_strategy", &self.flush_strat)
             .finish()
-
     }
 }
 
@@ -611,10 +642,10 @@ impl Buffer {
         }
     }
 
-    /// Return the number of bytes available to be read from this buffer.
+    /// Return the number of bytes currently in this buffer.
     ///
     /// Equivalent to `self.buf().len()`.
-    pub fn available(&self) -> usize {
+    pub fn buffered(&self) -> usize {
         self.end - self.pos
     }
 
@@ -631,7 +662,7 @@ impl Buffer {
 
     /// Returns `true` if there are no bytes in the buffer, false otherwise.
     pub fn is_empty(&self) -> bool {
-        self.available() == 0
+        self.buffered() == 0
     }
 
     /// Grow the buffer by `additional` bytes.
@@ -678,7 +709,7 @@ impl Buffer {
             return;
         }
 
-        let copy_amt = self.available();
+        let copy_amt = self.buffered();
         // Guaranteed lowering to memmove.
         safemem::copy(&mut self.buf, self.pos, 0, copy_amt);
 
@@ -762,7 +793,7 @@ impl Buffer {
     /// ###Panics
     /// If `self.write_to(wrt)` panics.
     pub fn write_all<W: Write>(&mut self, wrt: &mut W) -> io::Result<()> {
-        while self.available() > 0 {
+        while self.buffered() > 0 {
             match self.write_to(wrt) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "Buffer::write_all() got zero-sized write")),
                 Ok(_) => (),
@@ -808,7 +839,7 @@ impl Buffer {
     /// Consume `amt` bytes from the tail of this buffer. No more than `self.available()` bytes
     /// will be consumed.
     pub fn consume(&mut self, amt: usize) {
-        let avail = self.available();
+        let avail = self.buffered();
 
         if amt >= avail {
             self.clear();
@@ -827,7 +858,7 @@ impl Buffer {
     /// to the number of bytes available.
     pub fn into_inner(mut self) -> Vec<u8> {
         self.make_room();
-        let avail = self.available();
+        let avail = self.buffered();
         self.buf.truncate(avail);
         self.buf
     }
@@ -837,7 +868,7 @@ impl fmt::Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::Buffer")
             .field("capacity", &self.capacity())
-            .field("available", &self.available())
+            .field("available", &self.buffered())
             .finish()
     }
 }
@@ -857,7 +888,7 @@ impl<R> Unbuffer<R> {
 
     /// Returns the number of bytes remaining in the buffer.
     pub fn buf_len(&self) -> usize {
-        self.buf.as_ref().map(Buffer::available).unwrap_or(0)
+        self.buf.as_ref().map(Buffer::buffered).unwrap_or(0)
     }
 
     /// Get a slice over the available bytes in the buffer.
@@ -958,113 +989,3 @@ unsafe impl<R: Read> TrustRead for R {
 #[cfg(feature = "nightly")]
 pub use nightly::AssertTrustRead;
 
-#[cfg(feature = "nightly")]
-mod nightly {
-    use std::io::{self, Read};
-
-    use super::TrustRead;
-    use strategy::{MoveStrategy, ReadStrategy};
-
-    // ===== TrustRead impls =====
-    unsafe impl<R: Read> TrustRead for R {
-        /// Default impl which always returns `false`.
-        default fn is_trusted(&self) -> bool {
-            false
-        }
-    }
-
-    macro_rules! trust{
-        ($($ty:path),+) => (
-            $(unsafe impl $crate::TrustRead for $ty {
-                /// Unconditional impl that returns `true`.
-                fn is_trusted(&self) -> bool { true }
-            })+
-        )
-    }
-
-    trust! {
-        ::std::io::Stdin, ::std::fs::File, ::std::net::TcpStream,
-        ::std::io::Empty, ::std::io::Repeat
-    }
-
-    unsafe impl<'a> TrustRead for &'a [u8] {
-        /// Unconditional impl that returns `true`.
-        fn is_trusted(&self) -> bool { true }
-    }
-
-    unsafe impl<'a> TrustRead for ::std::io::StdinLock<'a> {
-        /// Unconditional impl that returns `true`.
-        fn is_trusted(&self) -> bool { true }
-    }
-
-    unsafe impl<T: AsRef<[u8]>> TrustRead for ::std::io::Cursor<T> {
-        /// Unconditional impl that returns `true`.
-        fn is_trusted(&self) -> bool { true }
-    }
-
-    unsafe impl<R: Read> TrustRead for ::std::io::BufReader<R> {
-        /// Returns `self.get_ref().is_trusted()`
-        fn is_trusted(&self) -> bool { self.get_ref().is_trusted() }
-    }
-
-    unsafe impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> TrustRead for ::BufReader<R, Rs, Ms> {
-        /// Returns `self.get_ref().is_trusted()`
-        fn is_trusted(&self) -> bool { self.get_ref().is_trusted() }
-    }
-
-    /// A wrapper for a `Read` type that will unconditionally return `true` for `self.is_trusted()`.
-    ///
-    /// See the `TrustRead` trait for more information.
-    pub struct AssertTrustRead<R>(R);
-
-    impl<R> AssertTrustRead<R> {
-        /// Create a new `AssertTrustRead` wrapping `inner`.
-        ///
-        /// ###Safety
-        /// Because this wrapper will return `true` for `self.is_trusted()`,
-        /// the inner reader may be passed uninitialized memory containing potentially
-        /// sensitive information from previous usage.
-        ///
-        /// Wrapping a reader with this type asserts that the reader will not attempt to access
-        /// the memory passed to `Read::read()`.
-        pub unsafe fn new(inner: R) -> Self {
-            AssertTrustRead(inner)
-        }
-
-        /// Get a reference to the inner reader.
-        pub fn get_ref(&self) -> &R { &self.0 }
-
-        /// Get a mutable reference to the inner reader.
-        ///
-        /// Unlike `BufReader` (from this crate or the stdlib), calling `.read()` through this
-        /// reference cannot cause logical inconsistencies because this wrapper does not take any
-        /// data from the underlying reader.
-        ///
-        /// However, it is best if you use the I/O methods on this wrapper itself, especially with
-        /// `BufReader` or `Buffer` as it allows them to elide zeroing of their buffers.
-        pub fn get_mut(&mut self) -> &mut R { &mut self.0 }
-
-        /// Take the wrapped reader by-value.
-        pub fn into_inner(self) -> R { self.0 }
-    }
-
-    impl<R> AsRef<R> for AssertTrustRead<R> {
-        fn as_ref(&self) -> &R { self.get_ref() }
-    }
-
-    impl<R> AsMut<R> for AssertTrustRead<R> {
-        fn as_mut(&mut self) -> &mut R { self.get_mut() }
-    }
-
-    impl<R: Read> Read for AssertTrustRead<R> {
-        /// Unconditionally calls through to `<R as Read>::read()`.
-        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-            self.0.read(out)
-        }
-    }
-
-    unsafe impl<R: Read> TrustRead for AssertTrustRead<R> {
-        /// Unconditional impl that returns `true`.
-        fn is_trusted(&self) -> bool { true }
-    }
-}

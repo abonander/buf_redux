@@ -30,7 +30,7 @@ pub struct IfEmpty;
 impl ReadStrategy for IfEmpty {
     #[inline]
     fn should_read(&self, buffer: &Buffer) -> bool {
-        buffer.available() == 0
+        buffer.buffered() == 0
     }
 }
 
@@ -41,7 +41,7 @@ pub struct LessThan(pub usize);
 
 impl ReadStrategy for LessThan { 
     fn should_read(&self, buffer: &Buffer) -> bool { 
-        buffer.available() < self.0
+        buffer.buffered() < self.0
     }
 }
 
@@ -68,7 +68,7 @@ pub struct AtEndLessThan1k;
 impl MoveStrategy for AtEndLessThan1k { 
     #[inline]
     fn should_move(&self, buffer: &Buffer) -> bool { 
-        buffer.headroom() == 0 && buffer.available() < 1024
+        buffer.headroom() == 0 && buffer.buffered() < 1024
     }
 }
 
@@ -82,7 +82,7 @@ pub struct AtEndLessThan(pub usize);
 
 impl MoveStrategy for AtEndLessThan { 
     fn should_move(&self, buffer: &Buffer) -> bool {
-        buffer.headroom() == 0 && buffer.available() < self.0
+        buffer.headroom() == 0 && buffer.buffered() < self.0
     }
 }
 
@@ -121,7 +121,7 @@ pub struct FlushAtLeast(pub usize);
 
 impl FlushStrategy for FlushAtLeast {
     fn should_flush(&self, buf: &Buffer, _: usize) -> bool {
-        buf.available() > self.0
+        buf.buffered() > self.0
     }
 }
 
@@ -131,6 +131,6 @@ pub struct FlushAtLeast8k;
 
 impl FlushStrategy for FlushAtLeast8k {
     fn should_flush(&self, buf: &Buffer, _: usize) -> bool {
-        buf.available() > 8192
+        buf.buffered() > 8192
     }
 }
