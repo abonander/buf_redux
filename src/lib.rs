@@ -744,6 +744,10 @@ impl Buffer {
     pub fn read_from<R: Read>(&mut self, rdr: &mut R) -> io::Result<usize> {
         self.check_cursors();
 
+        if self.headroom() == 0 {
+            return Ok(0);
+        }
+
         if !rdr.is_trusted() && self.zeroed < self.buf.len() {
             let start = cmp::max(self.end, self.zeroed);
 
@@ -780,10 +784,16 @@ impl Buffer {
 
     /// Write bytes from this buffer to `wrt`. Returns the number of bytes written or any errors.
     ///
+    /// If the buffer is empty, returns `Ok(0)`.
+    ///
     /// ###Panics
     /// If the count returned by `wrt.write()` would overflow the tail cursor if added to it.
     pub fn write_to<W: Write>(&mut self, wrt: &mut W) -> io::Result<usize> {
         self.check_cursors();
+
+        if self.buf.len() == 0 {
+            return Ok(0);
+        }
 
         let written = try!(wrt.write(self.buf()));
 
