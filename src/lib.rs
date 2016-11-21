@@ -741,7 +741,7 @@ impl Buffer {
     ///
     /// ###Panics
     /// If the returned count from `rdr.read()` overflows the head cursor of this buffer.
-    pub fn read_from<R: Read>(&mut self, rdr: &mut R) -> io::Result<usize> {
+    pub fn read_from<R: Read + ?Sized>(&mut self, rdr: &mut R) -> io::Result<usize> {
         self.check_cursors();
 
         if self.headroom() == 0 {
@@ -788,7 +788,7 @@ impl Buffer {
     ///
     /// ###Panics
     /// If the count returned by `wrt.write()` would overflow the tail cursor if added to it.
-    pub fn write_to<W: Write>(&mut self, wrt: &mut W) -> io::Result<usize> {
+    pub fn write_to<W: Write + ?Sized>(&mut self, wrt: &mut W) -> io::Result<usize> {
         self.check_cursors();
 
         if self.buf.len() == 0 {
@@ -809,7 +809,7 @@ impl Buffer {
     ///
     /// ###Panics
     /// If `self.write_to(wrt)` panics.
-    pub fn write_all<W: Write>(&mut self, wrt: &mut W) -> io::Result<()> {
+    pub fn write_all<W: Write + ?Sized>(&mut self, wrt: &mut W) -> io::Result<()> {
         while self.buffered() > 0 {
             match self.write_to(wrt) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "Buffer::write_all() got zero-sized write")),
