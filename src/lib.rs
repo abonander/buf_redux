@@ -65,6 +65,9 @@ use std::io::SeekFrom;
 use std::{cmp, error, fmt, io, ops};
 
 #[cfg(test)]
+mod std_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(feature = "nightly")]
