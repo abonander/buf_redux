@@ -732,6 +732,8 @@ impl Buffer {
 
     /// Read from `rdr`, returning the number of bytes read or any errors.
     ///
+    /// If there is no more room at the head of the buffer, this will return `Ok(0)`.
+    ///
     /// If `<R as TrustRead>::is_trusted(rdr)` returns `true`,
     /// this method can avoid zeroing the head of the buffer.
     ///
@@ -761,7 +763,9 @@ impl Buffer {
 
     /// Copy from `src` to the head of this buffer. Returns the number of bytes copied.
     ///
-    /// Will **not** grow the buffer if `src` is larger than `self.headroom()`.
+    /// This will **not** grow the buffer if `src` is larger than `self.headroom()`; instead,
+    /// it will fill the headroom and return the number of bytes copied. If there is no headroom,
+    /// this returns 0.
     pub fn copy_from_slice(&mut self, src: &[u8]) -> usize {
         self.check_cursors();
     
