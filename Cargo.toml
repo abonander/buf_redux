@@ -1,6 +1,6 @@
 [package]
 name = "buf_redux"
-version = "0.5.3"
+version = "0.5.4"
 authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 
 description = "A drop-in replacement for std::io::BufReader with extra features."
