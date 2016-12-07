@@ -245,8 +245,7 @@ impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// Unconditionally perform a read into the buffer, calling `.make_room()`
     /// if appropriate or necessary, as determined by the implementation.
     ///
-    /// If the read was successful, returns the number of bytes now available 
-    /// in the buffer.
+    /// If the read was successful, returns the number of bytes read.
     pub fn read_into_buf(&mut self) -> io::Result<usize> { 
         if self.should_move() {
             self.make_room();
