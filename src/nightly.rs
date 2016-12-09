@@ -15,19 +15,19 @@ unsafe impl<R: Read> TrustRead for R {
     }
 }
 
-macro_rules! trust{
-        ($($ty:path),+) => (
-            $(unsafe impl $crate::TrustRead for $ty {
-                /// Unconditional impl that returns `true`.
-                fn is_trusted(&self) -> bool { true }
-            })+
-        )
-    }
+macro_rules! trust {
+    ($($ty:path),+) => (
+        $(unsafe impl $crate::TrustRead for $ty {
+            /// Unconditional impl that returns `true`.
+            fn is_trusted(&self) -> bool { true }
+        })+
+    )
+}
 
 trust! {
-        ::std::io::Stdin, ::std::fs::File, ::std::net::TcpStream,
-        ::std::io::Empty, ::std::io::Repeat
-    }
+    ::std::io::Stdin, ::std::fs::File, ::std::net::TcpStream,
+    ::std::io::Empty, ::std::io::Repeat
+}
 
 unsafe impl<'a> TrustRead for &'a [u8] {
     /// Unconditional impl that returns `true`.
