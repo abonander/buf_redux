@@ -10,7 +10,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-
 use std::io::prelude::*;
 use std::io::{self, SeekFrom};
 use super::{BufReader, BufWriter};
@@ -267,41 +266,4 @@ fn test_buffered_writer_seek() {
     assert_eq!(w.seek(SeekFrom::Start(2)).ok(), Some(2));
     w.write_all(&[8, 9]).unwrap();
     assert_eq!(&w.into_inner().unwrap().into_inner()[..], &[0, 1, 8, 9, 4, 5, 6, 7]);
-}
-
-#[cfg(feature = "nightly")]
-mod bench {
-    extern crate test;
-
-    use ::{BufWriter, BufReader};
-
-    use std::io;
-
-    #[bench]
-    fn bench_buffered_reader(b: &mut test::Bencher) {
-        b.iter(|| {
-            BufReader::new(io::empty())
-        });
-    }
-
-    #[bench]
-    fn bench_std_buffered_reader(b: &mut test::Bencher) {
-        b.iter(|| {
-            io::BufReader::new(io::empty())
-        });
-    }
-
-    #[bench]
-    fn bench_buffered_writer(b: &mut test::Bencher) {
-        b.iter(|| {
-            BufWriter::new(io::sink())
-        });
-    }
-
-    #[bench]
-    fn bench_std_buffered_writer(b: &mut test::Bencher) {
-        b.iter(|| {
-            io::BufWriter::new(io::sink())
-        });
-    }
 }
