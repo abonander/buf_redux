@@ -54,15 +54,22 @@
 //!
 //! See the `BufReader` type in this crate for more info.
 #![warn(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(specialization))]
-#![cfg_attr(all(test, feature = "nightly"), feature(io, test))]
+#![cfg_attr(feature = "nightly", feature(alloc, specialization))]
+#![cfg_attr(test, feature(test))]
+#![cfg_attr(all(test, feature = "nightly"), feature(io))]
 
 extern crate safemem;
+
+#[cfg(test)]
+extern crate test;
 
 use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, error, fmt, io, ops};
+use std::{cmp, error, fmt, io, ops, mem};
+
+#[cfg(test)]
+mod benches;
 
 #[cfg(test)]
 mod std_tests;
@@ -73,6 +80,8 @@ mod tests;
 #[cfg(feature = "nightly")]
 mod nightly;
 
+mod raw;
+
 pub mod strategy;
 
 use self::strategy::{
@@ -81,6 +90,8 @@ use self::strategy::{
     FlushStrategy, DefaultFlushStrategy,
 };
 
+use self::raw::RawBuf;
+
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
 /// A drop-in replacement for `std::io::BufReader` with more functionality.
@@ -88,9 +99,10 @@ const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
 pub struct BufReader<R, Rs = DefaultReadStrategy, Ms = DefaultMoveStrategy>{
-    inner: R,
+    // First field for null pointer optimization.
     buf: Buffer,
-    read_strat: Rs, 
+    inner: R,
+    read_strat: Rs,
     move_strat: Ms,
 }
 
@@ -401,8 +413,8 @@ impl<T> ops::DerefMut for AssertSome<T> {
 /// A drop-in replacement for `std::io::BufWriter` with more control over the buffer size and the flushing
 /// strategy.
 pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
+    buf: Buffer,
     inner: AssertSome<W>,
-    buf: AssertSome<Buffer>,
     flush_strat: Fs,
     panicked: bool,
 }
@@ -427,11 +439,9 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
 
     /// Wrap `inner` with the given buffer capacity and flush strategy.
     pub fn with_capacity_and_strategy(capacity: usize, inner: W, flush_strat: Fs) -> Self {
-        let buf = Buffer::with_capacity(capacity);
-
         BufWriter {
             inner: AssertSome::new(inner),
-            buf: AssertSome::new(buf),
+            buf: Buffer::with_capacity(capacity),
             flush_strat: flush_strat,
             panicked: false,
         }
@@ -441,7 +451,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     pub fn flush_strategy<Fs_: FlushStrategy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
         BufWriter {
             inner: AssertSome::take_self(&mut self.inner),
-            buf: AssertSome::take_self(&mut self.buf),
+            buf: mem::replace(&mut self.buf, Buffer::with_capacity(0)),
             flush_strat: flush_strat,
             panicked: self.panicked,
         }
@@ -506,7 +516,10 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     /// with the data moved to the beginning and the length truncated to contain
     /// only valid data.
     pub fn into_inner_with_buf(mut self) -> (W, Vec<u8>){
-        (AssertSome::take(&mut self.inner), AssertSome::take(&mut self.buf).into_inner())
+        (
+            AssertSome::take(&mut self.inner),
+            mem::replace(&mut self.buf, Buffer::with_capacity(0)).into_inner()
+        )
     }
 
     fn flush_buf(&mut self) -> io::Result<()> {
@@ -610,9 +623,7 @@ impl<W> fmt::Display for IntoInnerError<W> {
 ///
 /// Supports interacting via I/O traits like `Read` and `Write`, and direct access.
 pub struct Buffer {
-    // FIXME: when `RawVec` becomes stable, use it to have more control over resizing,
-    // as well as eliminating the redundant length field.
-    buf: Vec<u8>,
+    buf: RawBuf,
     pos: usize,
     end: usize,
     zeroed: usize,
@@ -628,16 +639,8 @@ impl Buffer {
     ///
     /// If the `Vec` ends up with extra capacity, `Buffer` will use all of it.
     pub fn with_capacity(cap: usize) -> Self {
-        let mut buf = Vec::with_capacity(cap);
-
-        // Ensure we're using full capacity of the vector
-        let cap = buf.capacity();
-        unsafe {
-            buf.set_len(cap);
-        }
-
         Buffer {
-            buf: buf,
+            buf: RawBuf::with_capacity(cap),
             pos: 0,
             end: 0,
             zeroed: 0,
@@ -674,17 +677,9 @@ impl Buffer {
     pub fn grow(&mut self, additional: usize) { 
         self.check_cursors();
 
-        // FIXME use `RawVec` when stable to determine if in-place growth is possible,
-        // or if not, use it to lump reallocating together with `.make_room()`.
-        // This could be possible with the `nightly` feature but may add too much complexity and
-        // maintenance burden.
-
-        self.buf.reserve_exact(additional);
-
-        let cap = self.buf.capacity();
-
-        unsafe {
-            self.buf.set_len(cap);
+        // Returns `false` if we reallocated out-of-place and thus need to re-zero.
+        if !self.buf.resize(self.end, additional) {
+            self.zeroed = 0;
         }
     }
 
@@ -713,7 +708,7 @@ impl Buffer {
 
         let copy_amt = self.buffered();
         // Guaranteed lowering to memmove.
-        safemem::copy(&mut self.buf, self.pos, 0, copy_amt);
+        safemem::copy(self.buf.get_mut(), self.pos, 0, copy_amt);
 
         self.end -= self.pos;
         self.pos = 0;
@@ -722,12 +717,12 @@ impl Buffer {
     /// Get an immutable slice of the available bytes in this buffer.
     ///
     /// Call `.consume()` to remove bytes from the beginning of this slice.
-    pub fn buf(&self) -> &[u8] { &self.buf[self.pos .. self.end] }
+    pub fn buf(&self) -> &[u8] { self.buf.slice(self.pos .. self.end) }
 
     /// Get a mutable slice representing the available bytes in this buffer.
     ///
     /// Call `.consume()` to remove bytes from the beginning of this slice.
-    pub fn buf_mut(&mut self) -> &mut [u8] { &mut self.buf[self.pos .. self.end] }
+    pub fn buf_mut(&mut self) -> &mut [u8] { self.buf.slice_mut(self.pos .. self.end) }
 
     /// Read from `rdr`, returning the number of bytes read or any errors.
     ///
@@ -750,12 +745,12 @@ impl Buffer {
         if !rdr.is_trusted() && self.zeroed < self.buf.len() {
             let start = cmp::max(self.end, self.zeroed);
 
-            safemem::write_bytes(&mut self.buf[start..], 0);
+            safemem::write_bytes(self.buf.slice_mut(start..), 0);
 
             self.zeroed = self.buf.len();
         }
 
-        let read = try!(rdr.read(&mut self.buf[self.end..]));
+        let read = try!(rdr.read(self.buf.slice_mut(self.end..)));
 
         let new_end = self.end.checked_add(read).expect("Overflow adding bytes read to self.end");
 
@@ -774,7 +769,7 @@ impl Buffer {
     
         let len = cmp::min(self.buf.len() - self.end, src.len());
 
-        self.buf[self.end..self.end + len].copy_from_slice(&src[..len]);
+        self.buf.slice_mut(self.end .. self.end + len).copy_from_slice(&src[..len]);
 
         self.end += len;
 
@@ -848,7 +843,7 @@ impl Buffer {
             self.grow(s_len * 2);
         }
 
-        self.buf[s_len..].copy_from_slice(bytes);
+        self.buf.slice_mut(s_len..).copy_from_slice(bytes);
         self.end += s_len;
     }
 
@@ -875,8 +870,9 @@ impl Buffer {
     pub fn into_inner(mut self) -> Vec<u8> {
         self.make_room();
         let avail = self.buffered();
-        self.buf.truncate(avail);
-        self.buf
+        let mut buf = self.buf.into_vec();
+        buf.truncate(avail);
+        buf
     }
 }
 
