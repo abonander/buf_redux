@@ -14,49 +14,58 @@
 //! These replacements retain the method names/signatures and implemented traits of their stdlib
 //! counterparts, making replacement as simple as swapping the import of the type:
 //!
-//! ### `BufReader`:
+//! #### `BufReader`:
 //! ```notest
 //! - use std::io::BufReader;
 //! + extern crate buf_redux;
 //! + use buf_redux::BufReader;
 //! ```
-//! ### `BufReader`:
+//! #### `BufWriter`:
 //! ```notest
 //! - use std::io::BufWriter;
 //! + extern crate buf_redux;
 //! + use buf_redux::BufWriter;
 //! ```
+//! #### `LineWriter`:
+//! ```notest
+//! - use std::io::LineWriter;
+//! + use buf_redux::LineWriter;
+//! ```
 //!
 //! ### More Direct Control
 //!
-//! Both `BufReader` and `BufWriter` provide methods to:
-//!
-//! * Access the buffer through an `&`-reference without performing I/O
-//! * Force unconditional reads into the buffer
-//! * Shuffle bytes down to the beginning of the buffer to make room for more reading
+//! All replacement types provide methods to:
 //! * Increase the capacity of the buffer
 //! * Get the number of available bytes as well as the total capacity of the buffer
-//! * Consume the `BufReader` without losing data
-//! * Get inner reader and trimmed buffer with the remaining data
-//! * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
+//! * Consume the wrapper without losing data
 //!
-//! `BufReader` features:
+//! `BufReader` provides methods to:
+//! * Access the buffer through an `&`-reference without performing I/O
+//! * Force unconditional reads into the buffer
+//! * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
+//! * Shuffle bytes down to the beginning of the buffer to make room for more reading
+//! * Get inner reader and trimmed buffer with the remaining data
+//!
+//! `BufWriter` and `LineWriter` provides methods to:
+//! * Flush the buffer and unwrap the inner writer unconditionally.
+//! * Get the inner writer and trimmed buffer with the unflushed data.
 //!
 //! ### More Sensible and Customizable Buffering Behavior
 //! * Tune the behavior of the buffer to your specific use-case using the types in the [`strategy`
 //! module](strategy/index.html):
-//!     * `BufReader` performs reads as dictated by the [`ReadStrategy`
-//!     trait](strategy/trait.ReadStrategy.html).
-//!     * `BufReader` shuffles bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
+//!     * `BufReader` performs reads as dictated by the [`ReadStrategy` trait](strategy/trait.ReadStrategy.html).
+//!     * `BufReader` moves bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
 //! [`MoveStrategy` trait](strategy/trait.MoveStrategy.html).
-//! * `BufReader` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
+//!     * `BufWriter` flushes bytes to the inner writer when full, or when deemed appropriate by
+//!         the [`FlushStrategy` trait](strategy/trait.FlushStrategy.html).
+//! * `Buffer` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
 //!     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
-//!
-//! See the `BufReader` type in this crate for more info.
 #![warn(missing_docs)]
 #![cfg_attr(feature = "nightly", feature(alloc, specialization))]
 #![cfg_attr(test, feature(test))]
 #![cfg_attr(all(test, feature = "nightly"), feature(io))]
+
+extern crate memchr;
 
 extern crate safemem;
 
@@ -88,6 +97,7 @@ use self::strategy::{
     MoveStrategy, DefaultMoveStrategy,
     ReadStrategy, DefaultReadStrategy,
     FlushStrategy, DefaultFlushStrategy,
+    FlushOnNewline
 };
 
 use self::raw::RawBuf;
@@ -108,13 +118,13 @@ pub struct BufReader<R, Rs = DefaultReadStrategy, Ms = DefaultMoveStrategy>{
 
 impl<R> BufReader<R, DefaultReadStrategy, DefaultMoveStrategy> {
     /// Create a new `BufReader` wrapping `inner`, with a buffer of a
-    /// default capacity and default strategies.
+    /// default capacity and the default strategies.
     pub fn new(inner: R) -> Self {
         Self::with_strategies(inner, Default::default(), Default::default())
     }
 
     /// Create a new `BufReader` wrapping `inner` with a capacity
-    /// of *at least* `cap` bytes and default strategies.
+    /// of *at least* `cap` bytes and the default strategies.
     ///
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
@@ -410,8 +420,7 @@ impl<T> ops::DerefMut for AssertSome<T> {
     }
 }
 
-/// A drop-in replacement for `std::io::BufWriter` with more control over the buffer size and the flushing
-/// strategy.
+/// A drop-in replacement for `std::io::BufWriter` with more functionality.
 pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
     buf: Buffer,
     inner: AssertSome<W>,
@@ -532,7 +541,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
 
 impl<W: Write, Fs: FlushStrategy> Write for BufWriter<W, Fs> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.flush_strat.should_flush(&self.buf, buf.len()) {
+        if self.flush_strat.flush_before(&self.buf, buf.len()) {
             try!(self.flush_buf());
         }
 
@@ -577,6 +586,94 @@ impl<W: Write, Fs: FlushStrategy> Drop for BufWriter<W, Fs> {
             // dtors should not panic, so we ignore a failed flush
             let _r = self.flush_buf();
         }
+    }
+}
+
+/// A drop-in replacement for `std::io::LineWriter` with more functionality.
+pub struct LineWriter<W: Write>(BufWriter<W, FlushOnNewline>);
+
+impl<W: Write> LineWriter<W> {
+    /// Wrap `inner` with the default buffer capacity.
+    pub fn new(inner: W) -> Self {
+        LineWriter(BufWriter::with_strategy(inner, FlushOnNewline))
+    }
+
+    /// Wrap `inner` with the given buffer capacity.
+    pub fn with_capacity(capacity: usize, inner: W) -> Self {
+        LineWriter(BufWriter::with_capacity_and_strategy(capacity, inner, FlushOnNewline))
+    }
+
+    /// Get a reference to the inner writer.
+    pub fn get_ref(&self) -> &W {
+        self.0.get_ref()
+    }
+
+    /// Get a mutable reference to the inner writer.
+    ///
+    /// ###Note
+    /// If the buffer has not been flushed, writing directly to the inner type will cause
+    /// data inconsistency.
+    pub fn get_mut(&mut self) -> &mut W {
+        self.0.get_mut()
+    }
+
+    /// Get the capacty of the inner buffer.
+    pub fn capacity(&self) -> usize {
+        self.0.capacity()
+    }
+
+    /// Get the number of bytes currently in the buffer.
+    pub fn buffered(&self) -> usize {
+        self.0.buffered()
+    }
+
+    /// Grow the internal buffer by *at least* `additional` bytes. May not be
+    /// quite exact due to implementation details of the buffer's allocator.
+    ///
+    /// ##Note
+    /// This should not be called frequently as each call will incur a
+    /// reallocation.
+    pub fn grow(&mut self, additional: usize) {
+        self.0.grow(additional);
+    }
+
+    /// Flush the buffer and unwrap, returning the inner writer on success,
+    /// or a type wrapping `self` plus the error otherwise.
+    pub fn into_inner(self) -> Result<W, IntoInnerError<Self>> {
+        self.0.into_inner()
+            .map_err(|IntoInnerError(inner, e)| IntoInnerError(LineWriter(inner), e))
+    }
+
+    /// Flush the buffer and unwrap, returning the inner writer and
+    /// any error encountered during flushing.
+    pub fn into_inner_with_err(self) -> (W, Option<io::Error>) {
+        self.0.into_inner_with_err()
+    }
+
+    /// Consume `self` and return both the underlying writer and the buffer,
+    /// with the data moved to the beginning and the length truncated to contain
+    /// only valid data.
+    pub fn into_inner_with_buf(self) -> (W, Vec<u8>){
+        self.0.into_inner_with_buf()
+    }
+}
+
+impl<W: Write> Write for LineWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<W: fmt::Debug + Write> fmt::Debug for LineWriter<W> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("buf_redux::LineWriter")
+            .field("writer", self.get_ref())
+            .field("capacity", &self.capacity())
+            .finish()
     }
 }
 

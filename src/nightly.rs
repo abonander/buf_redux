@@ -1,9 +1,16 @@
+// Copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 use std::fmt;
 use std::io::{self, Read, Write};
 
 use super::TrustRead;
 
-use super::{BufReader, BufWriter};
+use super::{BufReader, BufWriter, LineWriter};
 
 use strategy::{FlushStrategy, MoveStrategy, ReadStrategy};
 
@@ -128,6 +135,15 @@ impl<W: Write, Fs: FlushStrategy> fmt::Debug for BufWriter<W, Fs> {
             .field("writer", &"(no Debug impl)")
             .field("capacity", &self.capacity())
             .field("flush_strategy", &self.flush_strat)
+            .finish()
+    }
+}
+
+impl<W: Write> fmt::Debug for LineWriter<W> {
+    default fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("buf_redux::LineWriter")
+            .field("writer", &"(no Debug impl)")
+            .field("capacity", &self.capacity())
             .finish()
     }
 }

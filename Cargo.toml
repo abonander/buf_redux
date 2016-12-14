@@ -1,9 +1,9 @@
 [package]
 name = "buf_redux"
-version = "0.5.4"
+version = "0.6.0"
 authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 
-description = "A drop-in replacement for std::io::BufReader with extra features."
+description = "Drop-in replacements for buffered I/O in `std::io` with extra features."
 
 keywords = ["io", "buffer", "buffered"]
 
@@ -11,10 +11,11 @@ documentation = "https://docs.rs/buf_redux"
 
 repository = "https://github.com/abonander/buf_redux"
 
-license = "MIT/Apache-2.0"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 safemem = "0.1"
+memchr = "*"
 
 [features]
 nightly = []

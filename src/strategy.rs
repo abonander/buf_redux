@@ -1,3 +1,10 @@
+// Copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
 //! Types which can be used to tune the behavior of `BufReader`.
 //!
 //! Some simple strategies are provided for your convenience. You may prefer to create your own
@@ -100,8 +107,20 @@ impl MoveStrategy for NeverMove {
 
 /// A trait which tells `BufWriter` when to flush.
 pub trait FlushStrategy: Default + fmt::Debug {
-    /// Return `true` if the buffer should be flused.
-    fn should_flush(&self, buf: &Buffer, incoming: usize) -> bool;
+    /// Return `true` if the buffer should be flushed before reading into it.
+    ///
+    /// The buffer is provided, as well as `incoming` which is
+    /// the size of the buffer that will be written to the `BufWriter`.
+    fn flush_before(&self, _buf: &Buffer, _incoming: usize) -> bool;
+
+    /// Return `true` if the buffer should be flushed after reading into it.
+    ///
+    /// `buf` references the updated buffer after the read.
+    ///
+    /// Default impl is a no-op.
+    fn flush_after(&self, _buf: &Buffer) -> bool {
+        false
+    }
 }
 
 /// Flush the buffer if there is no more headroom. Equivalent to the behavior or
@@ -110,7 +129,7 @@ pub trait FlushStrategy: Default + fmt::Debug {
 pub struct WhenFull;
 
 impl FlushStrategy for WhenFull {
-    fn should_flush(&self, buf: &Buffer, incoming: usize) -> bool {
+    fn flush_before(&self, buf: &Buffer, incoming: usize) -> bool {
         buf.headroom() < incoming
     }
 }
@@ -120,7 +139,7 @@ impl FlushStrategy for WhenFull {
 pub struct FlushAtLeast(pub usize);
 
 impl FlushStrategy for FlushAtLeast {
-    fn should_flush(&self, buf: &Buffer, _: usize) -> bool {
+    fn flush_before(&self, buf: &Buffer, _: usize) -> bool {
         buf.buffered() > self.0
     }
 }
@@ -130,7 +149,41 @@ impl FlushStrategy for FlushAtLeast {
 pub struct FlushAtLeast8k;
 
 impl FlushStrategy for FlushAtLeast8k {
-    fn should_flush(&self, buf: &Buffer, _: usize) -> bool {
+    fn flush_before(&self, buf: &Buffer, _: usize) -> bool {
         buf.buffered() > 8192
+    }
+}
+
+/// Flush the buffer if it contains the given byte.
+///
+/// Only scans the buffer after reading. Searches from the end first.
+#[derive(Debug, Default)]
+pub struct FlushOn(pub u8);
+
+impl FlushStrategy for FlushOn {
+    /// Same as `WhenFull`.
+    fn flush_before(&self, buf: &Buffer, incoming: usize) -> bool {
+        buf.headroom() < incoming
+    }
+
+    fn flush_after(&self, buf: &Buffer) -> bool {
+        ::memchr::memrchr(self.0, buf.buf()).is_some()
+    }
+}
+
+/// Flush the buffer if it contains a newline (`\n`).
+///
+/// Equivalent to `FlushOn(b'\n')`.
+#[derive(Debug, Default)]
+pub struct FlushOnNewline;
+
+impl FlushStrategy for FlushOnNewline {
+    /// Same as `WhenFull`.
+    fn flush_before(&self, buf: &Buffer, incoming: usize) -> bool {
+        buf.headroom() < incoming
+    }
+
+    fn flush_after(&self, buf: &Buffer) -> bool {
+        ::memchr::memrchr(b'\n', buf.buf()).is_some()
     }
 }
