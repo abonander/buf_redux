@@ -15,7 +15,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 safemem = "0.1"
-memchr = "*"
+memchr = "0.1"
 
 [features]
 nightly = []
