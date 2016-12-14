@@ -17,13 +17,11 @@
 //! #### `BufReader`:
 //! ```notest
 //! - use std::io::BufReader;
-//! + extern crate buf_redux;
 //! + use buf_redux::BufReader;
 //! ```
 //! #### `BufWriter`:
 //! ```notest
 //! - use std::io::BufWriter;
-//! + extern crate buf_redux;
 //! + use buf_redux::BufWriter;
 //! ```
 //! #### `LineWriter`:
