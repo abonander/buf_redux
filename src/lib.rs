@@ -803,7 +803,7 @@ impl Buffer {
 
         let copy_amt = self.buffered();
         // Guaranteed lowering to memmove.
-        safemem::copy(self.buf.get_mut(), self.pos, 0, copy_amt);
+        safemem::copy_over(self.buf.get_mut(), self.pos, 0, copy_amt);
 
         self.end -= self.pos;
         self.pos = 0;

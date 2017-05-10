@@ -34,10 +34,6 @@ mod impl_ {
             self.buf.capacity()
         }
 
-        pub fn get(&self) -> &[u8] {
-            &self.buf
-        }
-
         pub fn get_mut(&mut self) -> &mut [u8] {
             &mut self.buf
         }
