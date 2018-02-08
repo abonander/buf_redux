@@ -1,6 +1,6 @@
 [package]
 name = "buf_redux"
-version = "0.6.1"
+version = "0.6.2"
 authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 
 description = "Drop-in replacements for buffered I/O in `std::io` with extra features."
@@ -12,6 +12,8 @@ documentation = "https://docs.rs/buf_redux"
 repository = "https://github.com/abonander/buf_redux"
 
 license = "MIT OR Apache-2.0"
+
+readme = "README.md"
 
 [dependencies]
 safemem = "0.1"
