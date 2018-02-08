@@ -63,7 +63,7 @@ pub trait MoveStrategy: Default + fmt::Debug {
     fn should_move(&self, buffer: &Buffer) -> bool;
 }
 
-/// A `MoveStrategy` which tells the buffer to move data if there is no more room at the tail
+/// A `MoveStrategy` which tells the buffer to move data if there is no more room at the end
 /// of the buffer, *and* if there is less than **1 KiB** of valid data in the buffer.
 ///
 /// This avoids excessively large copies while still making room for more reads when appropriate.
@@ -79,7 +79,7 @@ impl MoveStrategy for AtEndLessThan1k {
     }
 }
 
-/// A `MoveStrategy` which triggers if there is no more room at the tail at the end of the buffer,
+/// A `MoveStrategy` which triggers if there is no more room at the end of the buffer,
 /// *and* there are fewer valid bytes in the buffer than the provided value.
 ///
 /// `AtEndLessThan(1)` is equivalent to `AtEnd`.

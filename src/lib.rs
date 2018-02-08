@@ -31,13 +31,14 @@
 //! ```
 //!
 //! ### More Direct Control
-//!
 //! All replacement types provide methods to:
+//!
 //! * Increase the capacity of the buffer
 //! * Get the number of available bytes as well as the total capacity of the buffer
 //! * Consume the wrapper without losing data
 //!
 //! `BufReader` provides methods to:
+//!
 //! * Access the buffer through an `&`-reference without performing I/O
 //! * Force unconditional reads into the buffer
 //! * Get a `Read` adapter which empties the buffer and then pulls from the inner reader directly
@@ -45,6 +46,7 @@
 //! * Get inner reader and trimmed buffer with the remaining data
 //!
 //! `BufWriter` and `LineWriter` provides methods to:
+//!
 //! * Flush the buffer and unwrap the inner writer unconditionally.
 //! * Get the inner writer and trimmed buffer with the unflushed data.
 //!
