@@ -16,8 +16,8 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-safemem = "0.1"
-memchr = "0.1"
+safemem = "0.2"
+memchr = "1.0"
 
 [features]
 nightly = []
