@@ -1,8 +1,8 @@
 // Original implementation Copyright 2013 The Rust Project Developers <https://github.com/rust-lang>
 //
-// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs
+// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.P
 //
-// Additions copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+// Additions copyright 2016-2018 Austin Bonander <austin.bonander@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -51,17 +51,91 @@
 //! * Get the inner writer and trimmed buffer with the unflushed data.
 //!
 //! ### More Sensible and Customizable Buffering Behavior
-//! * Tune the behavior of the buffer to your specific use-case using the types in the [`strategy`
-//! module](strategy/index.html):
-//!     * `BufReader` performs reads as dictated by the [`ReadStrategy` trait](strategy/trait.ReadStrategy.html).
-//!     * `BufReader` moves bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
-//! [`MoveStrategy` trait](strategy/trait.MoveStrategy.html).
-//!     * `BufWriter` flushes bytes to the inner writer when full, or when deemed appropriate by
-//!         the [`FlushStrategy` trait](strategy/trait.FlushStrategy.html).
-//! * `Buffer` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
-//!     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
+//! Tune the behavior of the buffer to your specific use-case using the types in the
+//! [`policy` module]:
+//!
+//! * Refine `BufReader`'s behavior by implementing the [`ReaderPolicy` trait] or use
+//! an existing implementation like [`MinBuffered`] to ensure the buffer always contains
+//! a minimum number of bytes (until the underlying reader is empty).
+//!
+//! * Refine `BufWriter`'s behavior by implementing the [`WriterPolicy` trait]
+//! or use an existing implementation like [`FlushOn`] to flush when a particular byte
+//! appears in the buffer (used to implement [`LineWriter`]).
+//!
+//! [`policy` module]: policy
+//! [`ReaderPolicy` trait]: policy::ReaderPolicy
+//! [`MinBuffered`]: policy::MinBuffered
+//! [`WriterPolicy`]: policy::WriterPolicy
+//! [`FlushOn`]: policy::FlushOn
+//! [`LineWriter`]: LineWriter
+//!
+//! ### Making Room
+//! The buffered types of this crate and their `std::io` counterparts, by default, use `Box<[u8]>`
+//! as their buffer types ([`Buffer`](Buffer) is included as well since it is used internally
+//! by the other types in this crate).
+//!
+//! When one of these types inserts bytes into its buffer, via `BufRead::fill_buf()` (implicitly
+//! called by `Read::read()`) in `BufReader`'s case or `Write::write()` in `BufWriter`'s case,
+//! the entire buffer is provided to be read/written into and the number of bytes written is saved.
+//! The read/written data then resides in the `[0 .. bytes_inserted]` slice of the buffer.
+//!
+//! When bytes are consumed from the buffer, via `BufRead::consume()` or `Write::flush()`,
+//! the number of bytes consumed is added to the start of the slice such that the remaining
+//! data resides in the `[bytes_consumed .. bytes_inserted]` slice of the buffer.
+//!
+//! The `std::io` buffered types, and their counterparts in this crate with their default policies,
+//! don't have to deal with partially filled buffers as `BufReader` only reads when empty and
+//! `BufWriter` only flushes when full.
+//!
+//! However, because the replacements in this crate are capable of reading on-demand and flushing
+//! less than a full buffer, they can run out of room in their buffers to read/write data into even
+//! though there is technically free space, because this free space is at the head of the buffer
+//! where reading into it would cause the data in the buffer to become non-contiguous.
+//!
+//! This isn't technically a problem as the buffer could operate like `VecDeque` in `std` and return
+//! both slices at once, but this would not fit all use-cases: the `Read::fill_buf()` interface only
+//! allows one slice to be returned at a time so the older data would need to be completely consumed
+//! before the newer data can be returned; `BufWriter` could support it as the `Write` interface
+//! doesn't make an opinion on how the buffer works, but because the data would be non-contiguous
+//! it would require two flushes to get it all, which could degrade performance.
+//!
+//! The obvious solution, then, is to move the existing data down to the beginning of the buffer
+//! when there is no more room at the end so that more reads/writes into the buffer can be issued.
+//! This works, and may suit some use-cases where the amount of data left is small and thus copying
+//! it would be inexpensive, but it is non-optimal. However, this option is provided
+//! as the `.make_room()` methods, and is utilized by [`policy::MinBuffered`](policy::MinBuffered)
+//! and [`policy::FlushExact`](policy::FlushExact).
+//!
+//! ### Ringbuffers / `slice-deque` Feature
+//! Instead of moving data, however, it is also possible to use virtual-memory tricks to
+//! allocate a ringbuffer that loops around on itself in memory and thus is always contiguous,
+//! as described in [the Wikipedia article on Ringbuffers][ringbuf-wikipedia].
+//!
+//! This is the exact trick used by [the `slice-deque` crate](https://crates.io/crates/slice-deque),
+//! which is now provided as an optional feature `slice-deque` exposed via the
+//! `new_ringbuf()` and `with_capacity_ringbuf()` constructors added to the buffered types here.
+//! When a buffered type is constructed using one of these functions, `.make_room()` is turned into
+//! a no-op as consuming bytes from the head of the buffer simultaneously makes room at the tail.
+//! However, this has some caveats:
+//!
+//! * It is only available on target platforms with virtual memory support, namely fully fledged
+//! OSes such as Windows and Unix-derivative platforms like Linux, OS X, BSD variants, etc.
+//!
+//! * The default capacity varies based on platform, and custom capacities are rounded up to a
+//! multiple of their minimum size, typically the page size of the platform.
+//! Windows' minimum size is comparably quite large (**64 KiB**) due to some legacy reasons,
+//! so this may be less optimal than the default capacity for a normal buffer (8 KiB) for some
+//! use-cases.
+//!
+//! * Due to the nature of the virtual-memory trick, the virtual address space the buffer
+//! allocates will be double its capacity. This means that your program will *appear* to use more
+//! memory than it would if it was using a normal buffer of the same capacity. The physical memory
+//! usage will be the same in both cases, but if address space is at a premium in your application
+//! then this may be a concern.
+//!
+//! [ringbuf-wikipedia]: https://en.wikipedia.org/wiki/Circular_buffer#Optimization
 #![warn(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(alloc, specialization))]
+#![cfg_attr(feature = "nightly", feature(alloc, read_initializer, specialization))]
 #![cfg_attr(test, feature(test))]
 #![cfg_attr(all(test, feature = "nightly"), feature(io))]
 
@@ -75,32 +149,31 @@ extern crate test;
 use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, error, fmt, io, ops, mem};
+use std::{cmp, error, fmt, io, mem, ptr};
 
 #[cfg(test)]
 mod benches;
 
+// ::std::io's tests require exact allocation which slice_deque cannot provide
 #[cfg(test)]
 mod std_tests;
 
-#[cfg(test)]
-mod tests;
+#[cfg(all(test, feature = "slice-deque"))]
+mod ringbuf_tests;
 
 #[cfg(feature = "nightly")]
 mod nightly;
 
-mod raw;
+#[cfg(feature = "nightly")]
+use nightly::init_buffer;
 
-pub mod strategy;
+mod buffer;
 
-use self::strategy::{
-    MoveStrategy, DefaultMoveStrategy,
-    ReadStrategy, DefaultReadStrategy,
-    FlushStrategy, DefaultFlushStrategy,
-    FlushOnNewline
-};
+use buffer::BufImpl;
 
-use self::raw::RawBuf;
+pub mod policy;
+
+use self::policy::{ReaderPolicy, WriterPolicy, StdPolicy, FlushOnNewline};
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
@@ -108,96 +181,121 @@ const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 ///
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
-pub struct BufReader<R, Rs = DefaultReadStrategy, Ms = DefaultMoveStrategy>{
+///
+/// By default this type implements the behavior of its `std` counterpart: it only reads into
+/// the buffer when it is empty.
+///
+/// To change this type's behavior, change the policy with [`.set_policy()`] using a type
+/// from the [`policy` module] or your own implementation of [`ReaderPolicy`].
+///
+/// Policies that perform alternating reads and consumes without completely emptying the buffer
+/// may benefit from using a ringbuffer via the [`new_ringbuf()`] and [`with_capacity_ringbuf()`]
+/// constructors. Ringbuffers are only available on supported platforms with the
+/// `slice-deque` feature and have some other caveats; see [the crate root docs][ringbufs-root]
+/// for more details.
+///
+/// [`.set_policy()`]: BufReader::set_policy
+/// [`policy` module]: policy
+/// [`ReaderPolicy`]: policy::ReaderPolicy
+/// [`new_ringbuf()`]: BufReader::new_ringbuf
+/// [`with_capacity_ringbuf()`]: BufReader::with_capacity_ringbuf
+/// [ringbufs-root]: index.html#ringbuffers--slice-deque-feature
+pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
     // First field for null pointer optimization.
     buf: Buffer,
     inner: R,
-    read_strat: Rs,
-    move_strat: Ms,
+    policy: P,
 }
 
-impl<R> BufReader<R, DefaultReadStrategy, DefaultMoveStrategy> {
-    /// Create a new `BufReader` wrapping `inner`, with a buffer of a
-    /// default capacity and the default strategies.
+impl<R> BufReader<R, StdPolicy> {
+    /// Create a new `BufReader` wrapping `inner`, utilizing a buffer of
+    /// default capacity and the default [`ReaderPolicy`](policy::ReaderPolicy).
     pub fn new(inner: R) -> Self {
-        Self::with_strategies(inner, Default::default(), Default::default())
+        Self::with_capacity(DEFAULT_BUF_SIZE, inner)
     }
 
-    /// Create a new `BufReader` wrapping `inner` with a capacity
-    /// of *at least* `cap` bytes and the default strategies.
+    /// Create a new `BufReader` wrapping `inner`, utilizing a buffer with a capacity
+    /// of *at least* `cap` bytes and the default [`ReaderPolicy`](policy::ReaderPolicy).
     ///
-    /// The actual capacity of the buffer may vary based on
-    /// implementation details of the buffer's allocator.
+    /// The actual capacity of the buffer may vary based on implementation details of the global
+    /// allocator.
     pub fn with_capacity(cap: usize, inner: R) -> Self {
-        Self::with_cap_and_strategies(inner, cap, Default::default(), Default::default())
+        Self::with_buffer(Buffer::with_capacity(cap), inner)
+    }
+
+    /// Create a new `BufReader` wrapping `inner`, utilizing a ringbuffer with the default capacity
+    /// and `ReaderPolicy`.
+    ///
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// [`MinBuffered`](policy::MinBuffered) to ensure there is always room to read more data
+    /// if necessary, without expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The default capacity will differ between Windows and Unix-derivative targets.
+    /// See [`Buffer::new_ringbuf()`](struct.Buffer.html#method.new_ringbuf)
+    /// or [the crate root docs](index.html#ringbuffers--slice-deque-feature) for more info.
+    #[cfg(feature = "slice-deque")]
+    pub fn new_ringbuf(inner: R) -> Self {
+        Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE, inner)
+    }
+
+    /// Create a new `BufReader` wrapping `inner`, utilizing a ringbuffer with *at least* the given
+    /// capacity and the default `ReaderPolicy`.
+    ///
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// [`MinBuffered`](policy::MinBuffered) to ensure there is always room to read more data
+    /// if necessary, without expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The capacity will be rounded up to the minimum size for the target platform.
+    /// See [`Buffer::with_capacity_ringbuf()`](struct.Buffer.html#method.with_capacity_ringbuf)
+    /// or [the crate root docs](index.html#ringbuffers--slice-deque-feature) for more info.
+    #[cfg(feature = "slice-deque")]
+    pub fn with_capacity_ringbuf(cap: usize, inner: R) -> Self {
+        Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
+    }
+
+    /// Wrap `inner` with an existing `Buffer` instance and the default `ReaderPolicy`.
+    ///
+    /// ### Note
+    /// Does **not** clear the buffer first! If there is data already in the buffer
+    /// then it will be returned in `read()` and `fill_buf()` ahead of any data from `inner`.
+    pub fn with_buffer(buf: Buffer, inner: R) -> Self {
+        BufReader {
+            buf, inner, policy: StdPolicy
+        }
     }
 }
 
-impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
-    /// Create a new `BufReader` wrapping `inner`, with a default buffer capacity
-    /// and with the given `ReadStrategy` and `MoveStrategy`.
-    pub fn with_strategies(inner: R, rs: Rs, ms: Ms) -> Self {
-        Self::with_cap_and_strategies(inner, DEFAULT_BUF_SIZE, rs, ms)
-    }
-
-    /// Create a new `BufReader` wrapping `inner`, with a buffer capacity of *at least*
-    /// `cap` bytes and the given `ReadStrategy` and `MoveStrategy`.
-    /// 
-    /// The actual capacity of the buffer may vary based on
-    /// implementation details of the buffer's allocator.
-    pub fn with_cap_and_strategies(inner: R, cap: usize, rs: Rs, ms: Ms) -> Self {
-        BufReader {
-            inner: inner,
-            buf: Buffer::with_capacity(cap),
-            read_strat: rs,
-            move_strat: ms,
-        }
-    }
-
-    /// Apply a new `MoveStrategy` to this `BufReader`, returning the transformed type.
-    pub fn move_strategy<Ms_: MoveStrategy>(self, ms: Ms_) -> BufReader<R, Rs, Ms_> {
+impl<R, P: ReaderPolicy> BufReader<R, P> {
+    /// Apply a new `ReaderPolicy` to this `BufReader`, returning the transformed type.
+    pub fn set_policy<P_: ReaderPolicy>(self, policy: P_) -> BufReader<R, P_> {
         BufReader { 
             inner: self.inner,
             buf: self.buf,
-            read_strat: self.read_strat,
-            move_strat: ms,
+            policy
         }
     }
 
-    /// Apply a new `ReadStrategy` to this `BufReader`, returning the transformed type.
-    pub fn read_strategy<Rs_: ReadStrategy>(self, rs: Rs_) -> BufReader<R, Rs_, Ms> {
-        BufReader { 
-            inner: self.inner,
-            buf: self.buf,
-            read_strat: rs,
-            move_strat: self.move_strat,
-        }
-    }
-
-    /// Accessor for updating the `MoveStrategy` in-place.
+    /// Accessor for updating the `ReaderPolicy` in-place.
     ///
-    /// If you want to change the type, use `.move_strategy()`.
-    pub fn move_strategy_mut(&mut self) -> &mut Ms { &mut self.move_strat }
-
-    /// Accessor for updating the `ReadStrategy` in-place.
-    ///
-    /// If you want to change the type, use `.read_strategy()`.
-    pub fn read_strategy_mut(&mut self) -> &mut Rs { &mut self.read_strat }
+    /// If you want to change the type, use `.set_policy()`.
+    pub fn policy_mut(&mut self) -> &mut P { &mut self.policy }
 
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
+    ///
+    /// This is a no-op with the `*_ringbuf()` constructors (requires `slice-deque` feature).
     pub fn make_room(&mut self) {
         self.buf.make_room();        
     }
 
-    /// Grow the internal buffer by *at least* `additional` bytes. May not be
+    /// Ensure room in the buffer for *at least* `additional` bytes. May not be
     /// quite exact due to implementation details of the buffer's allocator.
-    /// 
-    /// ##Note
-    /// This should not be called frequently as each call will incur a 
-    /// reallocation.
-    pub fn grow(&mut self, additional: usize) {
-        self.buf.grow(additional);
+    pub fn reserve(&mut self, additional: usize) {
+        self.buf.reserve(additional);
     }
 
     // RFC: pub fn shrink(&mut self, new_len: usize) ?
@@ -205,13 +303,13 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// Get the section of the buffer containing valid data; may be empty.
     ///
     /// Call `.consume()` to remove bytes from the beginning of this section.
-    pub fn get_buf(&self) -> &[u8] {
+    pub fn buffer(&self) -> &[u8] {
         self.buf.buf()
     }
 
     /// Get the current number of bytes available in the buffer.
-    pub fn available(&self) -> usize {
-        self.buf.buffered()
+    pub fn buf_len(&self) -> usize {
+        self.buf.len()
     }
 
     /// Get the total buffer capacity.
@@ -234,13 +332,11 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
         self.inner
     }
 
-    /// Consume `self` and return both the underlying reader and the buffer,
-    /// with the data moved to the beginning and the length truncated to contain
-    /// only valid data.
+    /// Consume `self` and return both the underlying reader and the buffer.
     ///
     /// See also: `BufReader::unbuffer()`
-    pub fn into_inner_with_buf(self) -> (R, Vec<u8>) {
-        (self.inner, self.buf.into_inner())
+    pub fn into_inner_with_buffer(self) -> (R, Buffer) {
+        (self.inner, self.buf)
     }
 
     /// Consume `self` and return an adapter which implements `Read` and will
@@ -253,92 +349,80 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     }
 
     #[inline]
-    fn should_read(&self) -> bool {
-        self.read_strat.should_read(&self.buf)
-    }
-
-    #[inline]
-    fn should_move(&self) -> bool {
-        self.move_strat.should_move(&self.buf)
+    fn should_read(&mut self) -> bool {
+        self.policy.before_read(&mut self.buf).0
     }
 }
 
-impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
-    /// Unconditionally perform a read into the buffer, calling `.make_room()`
-    /// if appropriate or necessary, as determined by the implementation.
+impl<R: Read, P: ReaderPolicy> BufReader<R, P> {
+    /// Unconditionally perform a read into the buffer.
     ///
+    /// Does not invoke `ReaderPolicy` methods.
+    /// 
     /// If the read was successful, returns the number of bytes read.
-    pub fn read_into_buf(&mut self) -> io::Result<usize> { 
-        if self.should_move() {
-            self.make_room();
-        }
-        
+    pub fn read_into_buf(&mut self) -> io::Result<usize> {
         self.buf.read_from(&mut self.inner)
     }
-}
 
-impl<R: Read, Rs, Ms> BufReader<R, Rs, Ms> {
     /// Box the inner reader without losing data.
-    pub fn boxed<'a>(self) -> BufReader<Box<Read + 'a>, Rs, Ms> where R: 'a {
+    pub fn boxed<'a>(self) -> BufReader<Box<Read + 'a>, P> where R: 'a {
         let inner: Box<Read + 'a> = Box::new(self.inner);
         
         BufReader {
-            inner: inner,
+            inner,
             buf: self.buf,
-            read_strat: self.read_strat,
-            move_strat: self.move_strat,
+            policy: self.policy,
         }
     }
 }
 
-impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> Read for BufReader<R, Rs, Ms> {
+impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        // If we don't have any buffered data and we're doing a massive read
-        // (larger than our internal buffer), bypass our internal buffer
-        // entirely.
-        if self.buf.is_empty() && out.len() > self.buf.capacity() {
+        // If we don't have any buffered data and we're doing a read matching
+        // or exceeding the internal buffer's capacity, bypass the buffer.
+        if self.buf.is_empty() && out.len() >= self.buf.capacity() {
             return self.inner.read(out);
         }
 
-        let nread = {
-            let mut rem = try!(self.fill_buf());
-            try!(rem.read(out))
-        };
+        let nread = self.fill_buf()?.read(out)?;
         self.consume(nread);
         Ok(nread)
     }
 }
 
-impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufRead for BufReader<R, Rs, Ms> {
+impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
-        if self.should_read() {
-            let _ = try!(self.read_into_buf());
+        // This execution order is important; the policy may want to resize the buffer or move data
+        // before reading into it.
+        while self.should_read() && self.buf.usable_space() > 0 {
+            if self.read_into_buf()? == 0 { break; };
         }
 
-        Ok(self.get_buf())
+        Ok(self.buffer())
     }
 
-    fn consume(&mut self, amt: usize) {
+    fn consume(&mut self, mut amt: usize) {
+        amt = cmp::min(amt, self.buf_len());
         self.buf.consume(amt);
+        self.policy.after_consume(&mut self.buf, amt);
     }
 }
 
-impl<R: fmt::Debug, Rs: ReadStrategy, Ms: MoveStrategy> fmt::Debug for BufReader<R, Rs, Ms> {
+impl<R: fmt::Debug, P: ReaderPolicy + fmt::Debug> fmt::Debug for BufReader<R, P> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("buf_redux::BufReader")
             .field("reader", &self.inner)
-            .field("available", &self.available())
+            .field("buf_len", &self.buf_len())
             .field("capacity", &self.capacity())
-            .field("read_strategy", &self.read_strat)
-            .field("move_strategy", &self.move_strat)
+            .field("policy", &self.policy)
             .finish()
     }
 }
 
-impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> {
-    /// Seek to an offset, in bytes, in the underlying reader.
+impl<R: Seek, P: ReaderPolicy> Seek for BufReader<R, P> {
+    /// Seek to an ofPet, in bytes, in the underlying reader.
     ///
     /// The position used for seeking with `SeekFrom::Current(_)` is the
     /// position the underlying reader would be at if the `BufReader` had no
@@ -359,116 +443,134 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let result: u64;
         if let SeekFrom::Current(n) = pos {
-            let remainder = self.available() as i64;
+            let remainder = self.buf_len() as i64;
             // it should be safe to assume that remainder fits within an i64 as the alternative
             // means we managed to allocate 8 ebibytes and that's absurd.
             // But it's not out of the realm of possibility for some weird underlying reader to
             // support seeking by i64::min_value() so we need to handle underflow when subtracting
             // remainder.
             if let Some(offset) = n.checked_sub(remainder) {
-                result = try!(self.inner.seek(SeekFrom::Current(offset)));
+                result = self.inner.seek(SeekFrom::Current(offset))?;
             } else {
                 // seek backwards by our remainder, and then by the offset
-                try!(self.inner.seek(SeekFrom::Current(-remainder)));
+                self.inner.seek(SeekFrom::Current(-remainder))?;
                 self.buf.clear(); // empty the buffer
-                result = try!(self.inner.seek(SeekFrom::Current(n)));
+                result = self.inner.seek(SeekFrom::Current(n))?;
             }
         } else {
             // Seeking with Start/End doesn't care about our buffer length.
-            result = try!(self.inner.seek(pos));
+            result = self.inner.seek(pos)?;
         }
         self.buf.clear();
         Ok(result)
     }
 }
 
-/// A type wrapping `Option` which provides more convenient access when the `Some` case is more
-/// common.
-struct AssertSome<T>(Option<T>);
-
-impl<T> AssertSome<T> {
-    fn new(val: T) -> Self {
-        AssertSome(Some(val))
-    }
-
-    fn take(this: &mut Self) -> T {
-        this.0.take().expect("Called AssertSome::take() more than once")
-    }
-
-    fn take_self(this: &mut Self) -> Self {
-        AssertSome(this.0.take())
-    }
-
-    fn is_some(this: &Self) -> bool {
-        this.0.is_some()
-    }
-}
-
-const ASSERT_DEREF_ERR: &'static str = "Attempt to access value of AssertSome after calling AssertSome::take()";
-
-impl<T> ops::Deref for AssertSome<T> {
-    type Target = T;
-    
-    fn deref(&self) -> &T { 
-        self.0.as_ref().expect(ASSERT_DEREF_ERR)
-    }
-}
-
-impl<T> ops::DerefMut for AssertSome<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.0.as_mut().expect(ASSERT_DEREF_ERR)
-    }
-}
-
 /// A drop-in replacement for `std::io::BufWriter` with more functionality.
-pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
+///
+/// Original method names/signatures and implemented traits are left untouched,
+/// making replacement as simple as swapping the import of the type.
+///
+/// By default this type implements the behavior of its `std` counterpart: it only flushes
+/// the buffer if an incoming write is larger than the remaining space.
+///
+/// To change this type's behavior, change the policy with [`.set_policy()`] using a type
+/// from the [`policy` module] or your own implentation of [`WriterPolicy`].
+///
+/// Policies that perform alternating writes and flushes without completely emptying the buffer
+/// may benefit from using a ringbuffer via the [`new_ringbuf()`] and [`with_capacity_ringbuf()`]
+/// constructors. Ringbuffers are only available on supported platforms with the
+/// `slice-deque` feature and have some caveats; see [the docs at the crate root][ringbufs-root]
+/// for more details.
+///
+/// [`.set_policy()`]: BufWriter::set_policy
+/// [`policy` module]: policy
+/// [`WriterPolicy`]: policy::WriterPolicy
+/// [`new_ringbuf()`]: BufWriter::new_ringbuf
+/// [`with_capacity_ringbuf()`]: BufWriter::with_capacity_ringbuf
+/// [ringbufs-root]: index.html#ringbuffers--slice-deque-feature
+pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
     buf: Buffer,
-    inner: AssertSome<W>,
-    flush_strat: Fs,
+    inner: W,
+    policy: P,
     panicked: bool,
 }
 
-impl<W: Write> BufWriter<W, DefaultFlushStrategy> {
-    /// Wrap `inner` with the default buffer capacity and flush strategy.
+impl<W: Write> BufWriter<W> {
+    /// Create a new `BufWriter` wrapping `inner` with the default buffer capacity and
+    /// [`WriterPolicy`](policy::WriterPolicy).
     pub fn new(inner: W) -> Self {
-        Self::with_strategy(inner, Default::default())
+        Self::with_buffer(Buffer::new(), inner)
     }
 
-    /// Wrap `inner` with the given buffer capacity and the default flush strategy.
-    pub fn with_capacity(capacity: usize, inner: W) -> Self {
-        Self::with_capacity_and_strategy(capacity, inner, Default::default())
+    /// Create a new `BufWriter` wrapping `inner`, utilizing a buffer with a capacity
+    /// of *at least* `cap` bytes and the default [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// The actual capacity of the buffer may vary based on implementation details of the global
+    /// allocator.
+    pub fn with_capacity(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity(cap), inner)
+    }
+
+    /// Create a new `BufWriter` wrapping `inner`, utilizing a ringbuffer with the default
+    /// capacity and [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    ///  [`FlushExact`](policy::FlushExact) to ensure there is always room to write more data if
+    /// necessary, without expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The default capacity will differ between Windows and Unix-derivative targets.
+    /// See [`Buffer::new_ringbuf()`](Buffer::new_ringbuf)
+    /// or [the crate root docs](index.html#ringbuffers--slice-deque-feature) for more info.
+    pub fn new_ringbuf(inner: W) -> Self {
+        Self::with_buffer(Buffer::new_ringbuf(), inner)
+    }
+
+    /// Create a new `BufWriter` wrapping `inner`, utilizing a ringbuffer with *at least* `cap`
+    /// capacity and the default [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// [`FlushExact`](policy::FlushExact) to ensure there is always room to write more data if
+    /// necessary, without expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The capacity will be rounded up to the minimum size for the target platform.
+    /// See [`Buffer::with_capacity_ringbuf()`](Buffer::with_capacity_ringbuf)
+    /// or [the crate root docs](index.html#ringbuffers--slice-deque-feature) for more info.
+    pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
+    }
+
+    /// Create a new `BufWriter` wrapping `inner`, utilizing the existing [`Buffer`](Buffer)
+    /// instance and the default [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// ### Note
+    /// Does **not** clear the buffer first! If there is data already in the buffer
+    /// it will be written out on the next flush!
+    pub fn with_buffer(buf: Buffer, inner: W) -> BufWriter<W> {
+        BufWriter {
+            buf, inner, policy: StdPolicy, panicked: false,
+        }
     }
 }
 
-impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
-    /// Wrap `inner` with the default buffer capacity and given flush strategy
-    pub fn with_strategy(inner: W, flush_strat: Fs) -> Self {
-        Self::with_capacity_and_strategy(DEFAULT_BUF_SIZE, inner, flush_strat)
-    }
+impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
+    /// Set a new [`WriterPolicy`](policy::WriterPolicy), returning the transformed type.
+    pub fn set_policy<P_: WriterPolicy>(self, policy: P_) -> BufWriter<W, P_> {
+        let panicked = self.panicked;
+        let (inner, buf) = self.into_inner_();
 
-    /// Wrap `inner` with the given buffer capacity and flush strategy.
-    pub fn with_capacity_and_strategy(capacity: usize, inner: W, flush_strat: Fs) -> Self {
         BufWriter {
-            inner: AssertSome::new(inner),
-            buf: Buffer::with_capacity(capacity),
-            flush_strat: flush_strat,
-            panicked: false,
+            inner, buf, policy, panicked
         }
     }
 
-    /// Set a new `FlushStrategy`, returning the transformed type.
-    pub fn flush_strategy<Fs_: FlushStrategy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
-        BufWriter {
-            inner: AssertSome::take_self(&mut self.inner),
-            buf: mem::replace(&mut self.buf, Buffer::with_capacity(0)),
-            flush_strat: flush_strat,
-            panicked: self.panicked,
-        }
-    }
-
-    /// Mutate the current flush strategy.
-    pub fn flush_strategy_mut(&mut self) -> &mut Fs {
-        &mut self.flush_strat
+    /// Mutate the current [`WriterPolicy`](policy::WriterPolicy).
+    pub fn policy_mut(&mut self) -> &mut P {
+        &mut self.policy
     }
 
     /// Get a reference to the inner writer.
@@ -478,7 +580,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
 
     /// Get a mutable reference to the inner writer.
     ///
-    /// ###Note
+    /// ### Note
     /// If the buffer has not been flushed, writing directly to the inner type will cause
     /// data inconsistency.
     pub fn get_mut(&mut self) -> &mut W {
@@ -491,116 +593,157 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     }
 
     /// Get the number of bytes currently in the buffer.
-    pub fn buffered(&self) -> usize {
-        self.buf.buffered()
+    pub fn buf_len(&self) -> usize {
+        self.buf.len()
     }
 
-    /// Grow the internal buffer by *at least* `additional` bytes. May not be
+    /// Reserve space in the buffer for at least `additional` bytes. May not be
     /// quite exact due to implementation details of the buffer's allocator.
-    /// 
-    /// ##Note
-    /// This should not be called frequently as each call will incur a 
-    /// reallocation.
-    pub fn grow(&mut self, additional: usize) {
-        self.buf.grow(additional);
+    pub fn reserve(&mut self, additional: usize) {
+        self.buf.reserve(additional);
+    }
+
+    /// Move data to the start of the buffer, making room at the end for more
+    /// writing.
+    ///
+    /// This is a no-op with the `*_ringbuf()` constructors (requires `slice-deque` feature).
+    pub fn make_room(&mut self) {
+        self.buf.make_room();
     }
 
     /// Flush the buffer and unwrap, returning the inner writer on success,
     /// or a type wrapping `self` plus the error otherwise.
     pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
-        match self.flush_buf() {
+        match self.flush() {
             Err(e) => Err(IntoInnerError(self, e)),
-            Ok(()) => Ok(AssertSome::take(&mut self.inner)),
+            Ok(()) => Ok(self.into_inner_().0),
         }
     }
 
     /// Flush the buffer and unwrap, returning the inner writer and
     /// any error encountered during flushing.
     pub fn into_inner_with_err(mut self) -> (W, Option<io::Error>) {
-        let err = self.flush_buf().err();
-        (AssertSome::take(&mut self.inner), err)
+        let err = self.flush().err();
+        (self.into_inner_().0, err)
     }
 
-    /// Consume `self` and return both the underlying writer and the buffer,
-    /// with the data moved to the beginning and the length truncated to contain
-    /// only valid data.
-    pub fn into_inner_with_buf(mut self) -> (W, Vec<u8>){
-        (
-            AssertSome::take(&mut self.inner),
-            mem::replace(&mut self.buf, Buffer::with_capacity(0)).into_inner()
-        )
+    /// Consume `self` and return both the underlying writer and the buffer
+    pub fn into_inner_with_buffer(self) -> (W, Buffer) {
+        self.into_inner_()
     }
 
-    fn flush_buf(&mut self) -> io::Result<()> {
+    // copy the fields out and forget `self` to avoid dropping twice
+    fn into_inner_(self) -> (W, Buffer) {
+        unsafe {
+            // safe because we immediately forget `self`
+            let inner = ptr::read(&self.inner);
+            let buf = ptr::read(&self.buf);
+            mem::forget(self);
+            (inner, buf)
+        }
+    }
+
+    fn flush_buf(&mut self, amt: usize) -> io::Result<()> {
+        if amt == 0 || amt > self.buf.len() { return Ok(()) }
+
         self.panicked = true;
-        let ret = self.buf.write_all(&mut *self.inner);
+        let ret = self.buf.write_max(amt, &mut self.inner);
         self.panicked = false;
         ret
     }
 }
 
-impl<W: Write, Fs: FlushStrategy> Write for BufWriter<W, Fs> {
+impl<W: Write, P: WriterPolicy> Write for BufWriter<W, P> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.flush_strat.flush_before(&self.buf, buf.len()) {
-            try!(self.flush_buf());
-        }
+        let flush_amt = self.policy.before_write(&mut self.buf, buf.len()).0;
+        self.flush_buf(flush_amt)?;
 
-        if buf.len() >= self.buf.capacity() {
+        let written = if self.buf.is_empty() && buf.len() >= self.buf.capacity() {
             self.panicked = true;
-            let ret = self.inner.write(buf);
+            let result = self.inner.write(buf);
             self.panicked = false;
-            ret
+            result?
         } else {
-            Ok(self.buf.copy_from_slice(buf))
-        }
+            self.buf.copy_from_slice(buf)
+        };
+
+        let flush_amt = self.policy.after_write(&self.buf).0;
+
+        let _ = self.flush_buf(flush_amt);
+
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        try!(self.flush_buf());
+        let flush_amt = self.buf.len();
+        self.flush_buf(flush_amt)?;
         self.inner.flush()
     }
 }
 
-impl<W: Write + Seek, Fs: FlushStrategy> Seek for BufWriter<W, Fs> {
-    /// Seek to the offset, in bytes, in the underlying writer.
+impl<W: Write + Seek, P: WriterPolicy> Seek for BufWriter<W, P> {
+    /// Seek to the ofPet, in bytes, in the underlying writer.
     ///
     /// Seeking always writes out the internal buffer before seeking.
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.flush_buf().and_then(|_| self.get_mut().seek(pos))
+        self.flush().and_then(|_| self.get_mut().seek(pos))
     }
 }
 
-impl<W: fmt::Debug + Write, Fs: FlushStrategy> fmt::Debug for BufWriter<W, Fs> {
+impl<W: fmt::Debug + Write, P: WriterPolicy + fmt::Debug> fmt::Debug for BufWriter<W, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufWriter")
-            .field("writer", &*self.inner)
+            .field("writer", &self.inner)
             .field("capacity", &self.capacity())
-            .field("flush_strategy", &self.flush_strat)
+            .field("policy", &self.policy)
             .finish()
     }
 }
 
-impl<W: Write, Fs: FlushStrategy> Drop for BufWriter<W, Fs> {
+impl<W: Write, P: WriterPolicy> Drop for BufWriter<W, P> {
     fn drop(&mut self) {
-        if AssertSome::is_some(&self.inner) && !self.panicked {
+        if !self.panicked {
             // dtors should not panic, so we ignore a failed flush
-            let _r = self.flush_buf();
+            let _r = self.flush();
         }
     }
 }
 
 /// A drop-in replacement for `std::io::LineWriter` with more functionality.
+///
+/// This is, in fact, only a thin wrapper around
+/// [`BufWriter`](BufWriter)`<W, `[`policy::FlushOnNewline`](policy::FlushOnNewline)`>`, which
+/// demonstrates the power of custom [`WriterPolicy`](policy::WriterPolicy) implementations.
 pub struct LineWriter<W: Write>(BufWriter<W, FlushOnNewline>);
 
 impl<W: Write> LineWriter<W> {
     /// Wrap `inner` with the default buffer capacity.
     pub fn new(inner: W) -> Self {
-        LineWriter(BufWriter::with_strategy(inner, FlushOnNewline))
+        Self::with_buffer(Buffer::new(), inner)
     }
 
     /// Wrap `inner` with the given buffer capacity.
-    pub fn with_capacity(capacity: usize, inner: W) -> Self {
-        LineWriter(BufWriter::with_capacity_and_strategy(capacity, inner, FlushOnNewline))
+    pub fn with_capacity(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity(cap), inner)
+    }
+
+    /// Wrap `inner` with the default buffer capacity using a ringbuffer.
+    pub fn new_ringbuf(inner: W) -> Self {
+        Self::with_buffer(Buffer::new_ringbuf(), inner)
+    }
+
+    /// Wrap `inner` with the given buffer capacity using a ringbuffer.
+    pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
+    }
+
+    /// Wrap `inner` with an existing `Buffer` instance.
+    ///
+    /// ### Note
+    /// Does **not** clear the buffer first! If there is data already in the buffer
+    /// it will be written out on the next flush!
+    pub fn with_buffer(buf: Buffer, inner: W) -> LineWriter<W> {
+        LineWriter(BufWriter::with_buffer(buf, inner).set_policy(FlushOnNewline))
     }
 
     /// Get a reference to the inner writer.
@@ -610,31 +753,27 @@ impl<W: Write> LineWriter<W> {
 
     /// Get a mutable reference to the inner writer.
     ///
-    /// ###Note
+    /// ### Note
     /// If the buffer has not been flushed, writing directly to the inner type will cause
     /// data inconsistency.
     pub fn get_mut(&mut self) -> &mut W {
         self.0.get_mut()
     }
 
-    /// Get the capacty of the inner buffer.
+    /// Get the capacity of the inner buffer.
     pub fn capacity(&self) -> usize {
         self.0.capacity()
     }
 
     /// Get the number of bytes currently in the buffer.
-    pub fn buffered(&self) -> usize {
-        self.0.buffered()
+    pub fn buf_len(&self) -> usize {
+        self.0.buf_len()
     }
 
-    /// Grow the internal buffer by *at least* `additional` bytes. May not be
+    /// Ensure enough space in the buffer for *at least* `additional` bytes. May not be
     /// quite exact due to implementation details of the buffer's allocator.
-    ///
-    /// ##Note
-    /// This should not be called frequently as each call will incur a
-    /// reallocation.
-    pub fn grow(&mut self, additional: usize) {
-        self.0.grow(additional);
+    pub fn reserve(&mut self, additional: usize) {
+        self.0.reserve(additional);
     }
 
     /// Flush the buffer and unwrap, returning the inner writer on success,
@@ -650,11 +789,9 @@ impl<W: Write> LineWriter<W> {
         self.0.into_inner_with_err()
     }
 
-    /// Consume `self` and return both the underlying writer and the buffer,
-    /// with the data moved to the beginning and the length truncated to contain
-    /// only valid data.
-    pub fn into_inner_with_buf(self) -> (W, Vec<u8>){
-        self.0.into_inner_with_buf()
+    /// Consume `self` and return both the underlying writer and the buffer.
+    pub fn into_inner_with_buf(self) -> (W, Buffer){
+        self.0.into_inner_with_buffer()
     }
 }
 
@@ -720,9 +857,7 @@ impl<W> fmt::Display for IntoInnerError<W> {
 ///
 /// Supports interacting via I/O traits like `Read` and `Write`, and direct access.
 pub struct Buffer {
-    buf: RawBuf,
-    pos: usize,
-    end: usize,
+    buf: BufImpl,
     zeroed: usize,
 }
 
@@ -732,143 +867,187 @@ impl Buffer {
         Self::with_capacity(DEFAULT_BUF_SIZE)
     }
 
-    /// Create a new buffer with the given capacity.
+    /// Create a new buffer with *at least* the given capacity.
     ///
-    /// If the `Vec` ends up with extra capacity, `Buffer` will use all of it.
+    /// If the global allocator returns extra capacity, `Buffer` will use all of it.
     pub fn with_capacity(cap: usize) -> Self {
         Buffer {
-            buf: RawBuf::with_capacity(cap),
-            pos: 0,
-            end: 0,
+            buf: BufImpl::with_capacity(cap),
             zeroed: 0,
         }
+    }
+
+    /// Allocate a buffer with a default capacity that never needs to move data to make room
+    /// (consuming from the head simultaneously makes more room at the tail).
+    ///
+    /// The default capacity varies based on the target platform:
+    ///
+    /// * Unix-derivative platforms; Linux, OS X, BSDs, etc: **8KiB** (the default buffer size for
+    /// `std::io` buffered types)
+    /// * Windows: **64KiB** because of legacy reasons, of course (see below)
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The current platforms that are supported/tested are listed
+    /// [in the README for the `slice-deque` crate][slice-deque].
+    ///
+    /// [slice-deque]: https://github.com/gnzlbg/slice_deque#platform-support
+    #[cfg(feature = "slice-deque")]
+    pub fn new_ringbuf() -> Self {
+        Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE)
+    }
+
+    /// Allocate a buffer with *at least* the given capacity that never needs to move data to
+    /// make room (consuming from the head simultaneously makes more room at the tail).
+    ///
+    /// The capacity will be rounded up to the minimum size for the current target:
+    ///
+    /// * Unix-derivative platforms; Linux, OS X, BSDs, etc: the next multiple of the page size
+    /// (typically 4KiB but can vary based on system configuration)
+    /// * Windows: the next muliple of **64KiB**; see [this Microsoft dev blog post][Win-why-64k]
+    /// for why it's 64KiB and not the page size (TL;DR: Alpha AXP needs it and it's applied on
+    /// all targets for consistency/portability)
+    ///
+    /// [Win-why-64k]: https://blogs.msdn.microsoft.com/oldnewthing/20031008-00/?p=42223
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The current platforms that are supported/tested are listed
+    /// [in the README for the `slice-deque` crate][slice-deque].
+    ///
+    /// [slice-deque]: https://github.com/gnzlbg/slice_deque#platform-support
+    #[cfg(feature = "slice-deque")]
+    pub fn with_capacity_ringbuf(cap: usize) -> Self {
+        Buffer {
+            buf: BufImpl::with_capacity_ringbuf(cap),
+            zeroed: 0,
+        }
+    }
+
+    /// Return `true` if this is a ringbuffer.
+    pub fn is_ringbuf(&self) -> bool {
+        self.buf.is_ringbuf()
     }
 
     /// Return the number of bytes currently in this buffer.
     ///
     /// Equivalent to `self.buf().len()`.
-    pub fn buffered(&self) -> usize {
-        self.end - self.pos
+    pub fn len(&self) -> usize {
+        self.buf.len()
     }
 
     /// Return the number of bytes that can be read into this buffer before it needs
     /// to grow or the data in the buffer needs to be moved.
-    pub fn headroom(&self) -> usize {
-        self.buf.len() - self.end
+    ///
+    /// This may not constitute all free space in the buffer if bytes have been consumed
+    /// from the head. Use `free_space()` to determine the total free space in the buffer.
+    pub fn usable_space(&self) -> usize {
+        self.buf.usable_space()
+    }
+
+    /// Returns the total amount of free space in the buffer, including bytes
+    /// already consumed from the head.
+    ///
+    /// This will be greater than or equal to `usable_space()`. On supported platforms
+    /// with the `slice-deque` feature enabled, it should be equal.
+    pub fn free_space(&self) -> usize {
+        self.capacity() - self.len()
     }
 
     /// Return the total capacity of this buffer.
     pub fn capacity(&self) -> usize {
-        self.buf.len()
+        self.buf.capacity()
     }
 
     /// Returns `true` if there are no bytes in the buffer, false otherwise.
     pub fn is_empty(&self) -> bool {
-        self.buffered() == 0
+        self.len() == 0
     }
 
-    /// Grow the buffer by `additional` bytes.
+    /// Move bytes down in the buffer to maximize usable space.
     ///
-    /// ###Panics
-    /// If `self.capacity() + additional` overflows.
-    pub fn grow(&mut self, additional: usize) { 
-        self.check_cursors();
+    /// This is a no-op on supported platforms with the `slice-deque` feature enabled.
+    pub fn make_room(&mut self) {
+        self.buf.make_room();
+    }
 
-        // Returns `false` if we reallocated out-of-place and thus need to re-zero.
-        if !self.buf.resize(self.end, additional) {
+    /// Ensure space for at least `additional` more bytes in the buffer.
+    ///
+    /// This is a no-op if `usable_space() >= additional`. Note that this will reallocate
+    /// even if there is enough free space at the head of the buffer for `additional` bytes,
+    /// because that free space is not at the tail where it can be read into.
+    /// If you prefer copying data down in the buffer before attempting to reallocate you may wish
+    /// to call `.make_room()` first.
+    ///
+    /// ### Panics
+    /// If `self.capacity() + additional` overflows.
+    pub fn reserve(&mut self, additional: usize) {
+        // Returns `true` if we reallocated out-of-place and thus need to re-zero.
+        if self.buf.reserve(additional) {
             self.zeroed = 0;
         }
     }
 
-    /// Reset the cursors if there is no data remaining.
-    ///
-    /// Returns true if there is no more potential headroom.
-    fn check_cursors(&mut self) -> bool {
-        if self.pos == 0 {
-            true
-        } else if self.pos == self.end {
-            self.pos = 0;
-            self.end = 0;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Make room in the buffer, moving data down to the beginning if necessary.
-    ///
-    /// Does not grow the buffer or delete unread bytes from it.
-    pub fn make_room(&mut self) {
-        if self.check_cursors() {
-            return;
-        }
-
-        let copy_amt = self.buffered();
-        // Guaranteed lowering to memmove.
-        safemem::copy_over(self.buf.get_mut(), self.pos, 0, copy_amt);
-
-        self.end -= self.pos;
-        self.pos = 0;
-    }            
-
     /// Get an immutable slice of the available bytes in this buffer.
     ///
     /// Call `.consume()` to remove bytes from the beginning of this slice.
-    pub fn buf(&self) -> &[u8] { self.buf.slice(self.pos .. self.end) }
+    pub fn buf(&self) -> &[u8] { self.buf.buf() }
 
     /// Get a mutable slice representing the available bytes in this buffer.
     ///
     /// Call `.consume()` to remove bytes from the beginning of this slice.
-    pub fn buf_mut(&mut self) -> &mut [u8] { self.buf.slice_mut(self.pos .. self.end) }
+    pub fn buf_mut(&mut self) -> &mut [u8] { self.buf.buf_mut() }
 
     /// Read from `rdr`, returning the number of bytes read or any errors.
     ///
     /// If there is no more room at the head of the buffer, this will return `Ok(0)`.
     ///
-    /// If `<R as TrustRead>::is_trusted(rdr)` returns `true`,
-    /// this method can avoid zeroing the head of the buffer.
+    /// Uses `Read::initializer()` to initialize the buffer if the `nightly`
+    /// feature is enabled, otherwise the buffer is zeroed if it has never been written.
     ///
-    /// See the `TrustRead` trait for more information.
-    ///
-    /// ###Panics
-    /// If the returned count from `rdr.read()` overflows the head cursor of this buffer.
+    /// ### Panics
+    /// If the returned count from `rdr.read()` overflows the tail cursor of this buffer.
     pub fn read_from<R: Read + ?Sized>(&mut self, rdr: &mut R) -> io::Result<usize> {
-        self.check_cursors();
-
-        if self.headroom() == 0 {
+        if self.usable_space() == 0 {
             return Ok(0);
         }
 
-        if !rdr.is_trusted() && self.zeroed < self.buf.len() {
-            let start = cmp::max(self.end, self.zeroed);
+        let cap = self.capacity();
+        if self.zeroed < cap {
+            unsafe {
+                let buf = self.buf.write_buf();
+                init_buffer(&rdr, buf);
+            }
 
-            safemem::write_bytes(self.buf.slice_mut(start..), 0);
-
-            self.zeroed = self.buf.len();
+            self.zeroed = cap;
         }
 
-        let read = try!(rdr.read(self.buf.slice_mut(self.end..)));
+        let read = {
+            let mut buf = unsafe { self.buf.write_buf() };
+            rdr.read(buf)?
+        };
 
-        let new_end = self.end.checked_add(read).expect("Overflow adding bytes read to self.end");
-
-        self.end = cmp::min(self.buf.len(), new_end);
+        unsafe {
+            self.buf.bytes_written(read);
+        }
 
         Ok(read)
     }
 
-    /// Copy from `src` to the head of this buffer. Returns the number of bytes copied.
+    /// Copy from `src` to the tail of this buffer. Returns the number of bytes copied.
     ///
-    /// This will **not** grow the buffer if `src` is larger than `self.headroom()`; instead,
-    /// it will fill the headroom and return the number of bytes copied. If there is no headroom,
-    /// this returns 0.
+    /// This will **not** grow the buffer if `src` is larger than `self.usable_space()`; instead,
+    /// it will fill the usable space and return the number of bytes copied. If there is no usable
+    /// space, this returns 0.
     pub fn copy_from_slice(&mut self, src: &[u8]) -> usize {
-        self.check_cursors();
-    
-        let len = cmp::min(self.buf.len() - self.end, src.len());
+        let len = unsafe {
+            let mut buf = self.buf.write_buf();
+            let len = cmp::min(buf.len(), src.len());
+            buf[..len].copy_from_slice(&src[..len]);
+            len
+        };
 
-        self.buf.slice_mut(self.end .. self.end + len).copy_from_slice(&src[..len]);
-
-        self.end += len;
+        unsafe {
+            self.buf.bytes_written(len);
+        }
 
         len
     }
@@ -877,33 +1056,53 @@ impl Buffer {
     ///
     /// If the buffer is empty, returns `Ok(0)`.
     ///
-    /// ###Panics
-    /// If the count returned by `wrt.write()` would overflow the tail cursor if added to it.
+    /// ### Panics
+    /// If the count returned by `wrt.write()` would cause the head cursor to overflow or pass
+    /// the tail cursor if added to it.
     pub fn write_to<W: Write + ?Sized>(&mut self, wrt: &mut W) -> io::Result<usize> {
-        self.check_cursors();
-
-        if self.buf.len() == 0 {
+        if self.len() == 0 {
             return Ok(0);
         }
 
-        let written = try!(wrt.write(self.buf()));
-
-        let new_pos = self.pos.checked_add(written)
-            .expect("Overflow adding bytes written to self.pos");
-
-        self.pos = cmp::min(new_pos, self.end);
+        let written = wrt.write(self.buf())?;
+        self.consume(written);
         Ok(written)
     }
 
-    /// Write all bytes in this buffer, ignoring interrupts. Continues writing until the buffer is
-    /// empty or an error is returned.
+    /// Write, at most, the given number of bytes from this buffer to `wrt`, continuing
+    /// to write and ignoring interrupts until the number is reached or the buffer is empty.
     ///
-    /// ###Panics
+    /// ### Panics
+    /// If the count returned by `wrt.write()` would cause the head cursor to overflow or pass
+    /// the tail cursor if added to it.
+    pub fn write_max<W: Write + ?Sized>(&mut self, mut max: usize, wrt: &mut W) -> io::Result<()> {
+        while self.len() > 0 && max > 0 {
+            let len = cmp::min(self.len(), max);
+            let n = match wrt.write(&self.buf()[..len]) {
+                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero,
+                                                   "Buffer::write_all() got zero-sized write")),
+                Ok(n) => n,
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+
+            self.consume(n);
+            max = max.saturating_sub(n);
+        }
+
+        Ok(())
+    }
+
+    /// Write all bytes in this buffer to `wrt`, ignoring interrupts. Continues writing until
+    /// the buffer is empty or an error is returned.
+    ///
+    /// ### Panics
     /// If `self.write_to(wrt)` panics.
     pub fn write_all<W: Write + ?Sized>(&mut self, wrt: &mut W) -> io::Result<()> {
-        while self.buffered() > 0 {
+        while self.len() > 0 {
             match self.write_to(wrt) {
-                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero, "Buffer::write_all() got zero-sized write")),
+                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero,
+                                                   "Buffer::write_all() got zero-sized write")),
                 Ok(_) => (),
                 Err(ref e) if e.kind() == io::ErrorKind::Interrupted => (),
                 Err(e) => return Err(e),
@@ -915,8 +1114,6 @@ impl Buffer {
 
     /// Copy bytes to `out` from this buffer, returning the number of bytes written.
     pub fn copy_to_slice(&mut self, out: &mut [u8]) -> usize {
-        self.check_cursors();
-
         let len = {
             let buf = self.buf();
 
@@ -925,51 +1122,37 @@ impl Buffer {
             len
         };
 
-        self.pos += len;
+        self.consume(len);
 
         len
     }
 
     /// Push `bytes` to the end of the buffer, growing it if necessary.
+    ///
+    /// If you prefer moving bytes down in the buffer to reallocating, you may wish to call
+    /// `.make_room()` first.
     pub fn push_bytes(&mut self, bytes: &[u8]) {
-        self.check_cursors();
-
         let s_len = bytes.len();
 
-        if self.headroom() < s_len {
-            self.grow(s_len * 2);
+        if self.usable_space() < s_len {
+            self.reserve(s_len * 2);
         }
 
-        self.buf.slice_mut(s_len..).copy_from_slice(bytes);
-        self.end += s_len;
+        unsafe {
+            self.buf.write_buf()[..s_len].copy_from_slice(bytes);
+            self.buf.bytes_written(s_len);
+        }
     }
 
-    /// Consume `amt` bytes from the tail of this buffer. No more than `self.available()` bytes
-    /// will be consumed.
+    /// Consume `amt` bytes from the head of this buffer.
     pub fn consume(&mut self, amt: usize) {
-        let avail = self.buffered();
-
-        if amt >= avail {
-            self.clear();
-        } else {
-            self.pos += amt;
-        }
+        self.buf.consume(amt);
     }
 
-    /// Empty this buffer by resetting the cursors.
+    /// Empty this buffer by consuming all bytes.
     pub fn clear(&mut self) {
-        self.pos = 0;
-        self.end = 0;
-    }
-
-    /// Move the bytes down the beginning of the buffer and take the inner vector, truncated
-    /// to the number of bytes available.
-    pub fn into_inner(mut self) -> Vec<u8> {
-        self.make_room();
-        let avail = self.buffered();
-        let mut buf = self.buf.into_vec();
-        buf.truncate(avail);
-        buf
+        let buf_len = self.len();
+        self.consume(buf_len);
     }
 }
 
@@ -977,13 +1160,13 @@ impl fmt::Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::Buffer")
             .field("capacity", &self.capacity())
-            .field("available", &self.buffered())
+            .field("len", &self.len())
             .finish()
     }
 }
 
-/// A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before reading from
-/// `inner` directly. Frees the buffer when it has been emptied. 
+/// A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before
+/// reading from `R` directly. Frees the buffer when it has been emptied.
 pub struct Unbuffer<R> {
     inner: R,
     buf: Option<Buffer>,
@@ -997,7 +1180,7 @@ impl<R> Unbuffer<R> {
 
     /// Returns the number of bytes remaining in the buffer.
     pub fn buf_len(&self) -> usize {
-        self.buf.as_ref().map(Buffer::buffered).unwrap_or(0)
+        self.buf.as_ref().map(Buffer::len).unwrap_or(0)
     }
 
     /// Get a slice over the available bytes in the buffer.
@@ -1038,7 +1221,8 @@ impl<R: fmt::Debug> fmt::Debug for Unbuffer<R> {
 
 /// Copy data between a `BufRead` and a `Write` without an intermediate buffer.
 ///
-/// Retries on interrupts.
+/// Retries on interrupts. Returns the total bytes copied or the first error;
+/// even if an error is returned some bytes may still have been copied.
 pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
     let mut total_copied = 0;
 
@@ -1059,42 +1243,8 @@ pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
     Ok(total_copied)
 }
 
-/// A trait which `Buffer` can use to determine whether or not
-/// it is safe to elide zeroing of its buffer.
-///
-/// Has a default implementation of `is_trusted()` which always returns `false`.
-///
-/// Use the `nightly` feature to enable specialization, which means this
-/// trait can be implemented for specifically trusted types from the stdlib
-/// and potentially elsewhere.
-///
-/// ###Motivation
-/// As part of its intended operation, `Buffer` can pass a potentially
-/// uninitialized slice of its buffer to `Read::read()`. Untrusted readers could access sensitive
-/// information in this slice, from previous usage of that region of memory,
-/// which has not been overwritten yet. Thus, the uninitialized parts of the buffer need to be zeroed
-/// to prevent unintentional leakage of information.
-///
-/// However, for trusted readers which are known to only write to this slice and not read from it,
-/// such as various types in the stdlib which will pass the slice directly to a syscall,
-/// this zeroing is an unnecessary waste of cycles which the optimizer may or may not elide properly.
-///
-/// This trait helps `Buffer` determine whether or not a particular reader is trustworthy.
-pub unsafe trait TrustRead: Read {
-    /// Return `true` if this reader does not need a zeroed slice passed to `.read()`.
-    fn is_trusted(&self) -> bool;
-}
-
 #[cfg(not(feature = "nightly"))]
-unsafe impl<R: Read> TrustRead for R {
-    /// Default impl which always returns `false`.
-    ///
-    /// Enable the `nightly` feature to specialize this impl for various types.
-    fn is_trusted(&self) -> bool {
-        false
-    }
+fn init_buffer<R: Read + ?Sized>(_r: &R, buf: &mut [u8]) {
+    // we can't trust a reader without nightly
+    safemem::write_bytes(buf, 0);
 }
-
-#[cfg(feature = "nightly")]
-pub use nightly::AssertTrustRead;
-

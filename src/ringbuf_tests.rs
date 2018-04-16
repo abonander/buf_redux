@@ -2,7 +2,7 @@
 //
 // Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs
 //
-// Modifications copyright 2016-2018 Austin Bonander <austin.bonander@gmail.com>
+// Modifications copyright 2018 Austin Bonander <austin.bonander@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -10,32 +10,56 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! These tests are copied from rust/src/libstd/io/buffered.rs
-//! They assume exact capacity allocation
+//! Tests checking `Buffer::new_ringbuf()` and friends.
+//!
+//! Some may be adapted from rust/src/libstd/io/buffered.rs
+//!
+//! Since `SliceDeque` rounds allocations up to the page size or larger, these cannot assume
+//! a small capacity like `std_test` does.
+
+// TODO: add tests centered around the mirrored buf boundary
 
 use std::io::prelude::*;
 use std::io::{self, SeekFrom};
-use {BufReader, BufWriter, LineWriter};
 
-/// A dummy reader intended at testing short-reads propagation.
-pub struct ShortReader {
-    pub lengths: Vec<usize>,
-}
+use {Buffer, BufReader, DEFAULT_BUF_SIZE};
 
-impl Read for ShortReader {
-    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-        if self.lengths.is_empty() {
-            Ok(0)
+use std_tests::ShortReader;
+
+macro_rules! assert_capacity {
+    ($buf:expr, $cap:expr) => {
+        let cap = $buf.capacity();
+            if cfg!(windows) {
+            // Windows' minimum allocation size is 64K
+            assert_eq!(cap, ::std::cmp::max(64 * 1024, cap));
         } else {
-            Ok(self.lengths.remove(0))
+            assert_eq!(cap, $cap);
         }
     }
 }
 
 #[test]
+fn test_buffer_new() {
+    let buf = Buffer::new_ringbuf();
+    assert_capacity!(buf, DEFAULT_BUF_SIZE);
+    assert_eq!(buf.capacity(), buf.usable_space());
+}
+
+#[test]
+fn test_buffer_with_cap() {
+    let buf = Buffer::with_capacity_ringbuf(4 * 1024);
+    assert_capacity!(buf, DEFAULT_BUF_SIZE);
+
+    // test rounding up to page size
+    let buf = Buffer::with_capacity_ringbuf(64);
+    assert_capacity!(buf, 4 * 1024);
+    assert_eq!(buf.capacity(), buf.usable_space());
+}
+
+#[test]
 fn test_buffered_reader() {
     let inner: &[u8] = &[5, 6, 7, 0, 1, 2, 3, 4];
-    let mut reader = BufReader::with_capacity(2, inner);
+    let mut reader = BufReader::new_ringbuf(inner);
 
     let mut buf = [0, 0, 0];
     let nread = reader.read(&mut buf);
@@ -57,13 +81,8 @@ fn test_buffered_reader() {
 
     let mut buf = [0, 0, 0];
     let nread = reader.read(&mut buf);
-    assert_eq!(nread.unwrap(), 1);
-    let b: &[_] = &[3, 0, 0];
-    assert_eq!(buf, b);
-
-    let nread = reader.read(&mut buf);
-    assert_eq!(nread.unwrap(), 1);
-    let b: &[_] = &[4, 0, 0];
+    assert_eq!(nread.unwrap(), 2);
+    let b: &[_] = &[3, 4, 0];
     assert_eq!(buf, b);
 
     assert_eq!(reader.read(&mut buf).unwrap(), 0);
@@ -72,16 +91,17 @@ fn test_buffered_reader() {
 #[test]
 fn test_buffered_reader_seek() {
     let inner: &[u8] = &[5, 6, 7, 0, 1, 2, 3, 4];
-    let mut reader = BufReader::with_capacity(2, io::Cursor::new(inner));
+    let mut reader = BufReader::new_ringbuf(io::Cursor::new(inner));
 
     assert_eq!(reader.seek(SeekFrom::Start(3)).ok(), Some(3));
-    assert_eq!(reader.fill_buf().ok(), Some(&[0, 1][..]));
+    assert_eq!(reader.fill_buf().ok(), Some(&[0, 1, 2, 3, 4][..]));
     assert_eq!(reader.seek(SeekFrom::Current(0)).ok(), Some(3));
-    assert_eq!(reader.fill_buf().ok(), Some(&[0, 1][..]));
+    assert_eq!(reader.fill_buf().ok(), Some(&[0, 1, 2, 3, 4][..]));
     assert_eq!(reader.seek(SeekFrom::Current(1)).ok(), Some(4));
-    assert_eq!(reader.fill_buf().ok(), Some(&[1, 2][..]));
+    assert_eq!(reader.fill_buf().ok(), Some(&[1, 2, 3, 4][..]));
     reader.consume(1);
     assert_eq!(reader.seek(SeekFrom::Current(-2)).ok(), Some(3));
+    assert_eq!(reader.fill_buf().ok(), Some(&[0, 1, 2, 3, 4][..]));
 }
 
 #[test]
@@ -213,102 +233,37 @@ fn test_chars() {
     assert!(it.next().is_none());
 }
 
-// BufWriter tests
+/// Test that the ringbuffer wraps as intended
 #[test]
-fn test_buffered_writer() {
-    let inner = Vec::new();
-    let mut writer = BufWriter::with_capacity(2, inner);
+fn test_mirror_boundary() {
+    // pretends the given bytes have been read
+    struct FakeReader(usize);
 
-    assert_eq!(writer.capacity(), 2);
-
-    writer.write(&[0, 1]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1]);
-
-    writer.write(&[2]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1]);
-
-    writer.write(&[3]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1]);
-
-    writer.flush().unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 2, 3]);
-
-    writer.write(&[4]).unwrap();
-    writer.write(&[5]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 2, 3]);
-
-    writer.write(&[6]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5]);
-
-    writer.write(&[7, 8]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
-
-    writer.write(&[9, 10, 11]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-
-    writer.flush().unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-}
-
-#[test]
-fn test_buffered_writer_inner_flushes() {
-    let mut w = BufWriter::with_capacity(3, Vec::new());
-    w.write(&[0, 1]).unwrap();
-    assert_eq!(*w.get_ref(), []);
-    let w = w.into_inner().unwrap();
-    assert_eq!(w, [0, 1]);
-}
-
-#[test]
-fn test_buffered_writer_seek() {
-    let mut w = BufWriter::with_capacity(3, io::Cursor::new(Vec::new()));
-    w.write_all(&[0, 1, 2, 3, 4, 5]).unwrap();
-    w.write_all(&[6, 7]).unwrap();
-    assert_eq!(w.seek(SeekFrom::Current(0)).ok(), Some(8));
-    assert_eq!(&w.get_ref().get_ref()[..], &[0, 1, 2, 3, 4, 5, 6, 7][..]);
-    assert_eq!(w.seek(SeekFrom::Start(2)).ok(), Some(2));
-    w.write_all(&[8, 9]).unwrap();
-    assert_eq!(&w.into_inner().unwrap().into_inner()[..], &[0, 1, 8, 9, 4, 5, 6, 7]);
-}
-
-#[test]
-fn test_line_buffer() {
-    let mut writer = LineWriter::new(Vec::new());
-    writer.write(&[0]).unwrap();
-    assert_eq!(*writer.get_ref(), []);
-    writer.write(&[1]).unwrap();
-    assert_eq!(*writer.get_ref(), []);
-    writer.flush().unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1]);
-    writer.write(&[0, b'\n', 1, b'\n', 2]).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n']);
-    writer.flush().unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n', 2]);
-    writer.write(&[3, b'\n']).unwrap();
-    assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n', 2, 3, b'\n']);
-}
-
-#[test]
-fn test_buf_writer_drops_once() {
-    struct CountDrops(usize);
-
-    impl Write for CountDrops {
-        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
-            unimplemented!()
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            unimplemented!()
+    impl Read for FakeReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(self.0)
         }
     }
 
-    impl Drop for CountDrops {
-        fn drop(&mut self) {
-            assert_eq!(self.0, 0);
-            self.0 += 1;
-        }
-    }
+    let mut buffer = Buffer::new_ringbuf();
+    let cap = buffer.capacity();
 
-    let writer = BufWriter::new(CountDrops(0));
-    let (_, _) = writer.into_inner_with_buffer();
+    // declaring these as variables for sanity
+    let read_amt = cap; // fill the buffer
+    let test_slice = &[1, 2, 3, 4, 5];
+    let consume_amt = read_amt - 5; // leave several bytes on the head side of the mirror
+
+    assert_eq!(buffer.read_from(&mut FakeReader(read_amt)).unwrap(), read_amt);
+    assert_eq!(buffer.usable_space(), cap - read_amt); // should be 0
+    assert_eq!(buffer.read_from(&mut FakeReader(read_amt)).unwrap(), 0); // buffer is full
+    buffer.consume(consume_amt);
+    assert_eq!(buffer.usable_space(), consume_amt);
+    assert_eq!(buffer.copy_from_slice(test_slice), test_slice.len());
+
+    // zeroes are the bytes we didn't consume
+    assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0, 1, 2, 3, 4, 5]);
+    buffer.clear();
+    assert_eq!(buffer.usable_space(), cap);
 }
+
+// `BufWriter` doesn't utilize a ringbuffer
