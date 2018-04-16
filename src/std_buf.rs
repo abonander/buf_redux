@@ -1,4 +1,4 @@
-// Copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+// Copyright 2016-2018 Austin Bonander <austin.bonander@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license

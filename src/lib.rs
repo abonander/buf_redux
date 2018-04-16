@@ -1,8 +1,8 @@
 // Original implementation Copyright 2013 The Rust Project Developers <https://github.com/rust-lang>
 //
-// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.rs
+// Original source file: https://github.com/rust-lang/rust/blob/master/src/libstd/io/buffered.P
 //
-// Additions copyright 2016 Austin Bonander <austin.bonander@gmail.com>
+// Additions copyright 2016-2018 Austin Bonander <austin.bonander@gmail.com>
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -61,7 +61,7 @@
 //! * `Buffer` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
 //!     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
 #![warn(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(alloc, specialization))]
+#![cfg_attr(feature = "nightly", feature(alloc, read_initializer, specialization))]
 #![cfg_attr(test, feature(test))]
 #![cfg_attr(all(test, feature = "nightly"), feature(io))]
 
@@ -89,18 +89,16 @@ mod tests;
 #[cfg(feature = "nightly")]
 mod nightly;
 
-mod raw;
+#[cfg(feature = "nightly")]
+use nightly::init_buffer;
 
-pub mod strategy;
+mod std_buf;
 
-use self::strategy::{
-    MoveStrategy, DefaultMoveStrategy,
-    ReadStrategy, DefaultReadStrategy,
-    FlushStrategy, DefaultFlushStrategy,
-    FlushOnNewline
-};
+pub mod policy;
 
-use self::raw::RawBuf;
+use self::policy::{ReaderPolicy, WriterPolicy, StdPolicy, FlushOnNewline};
+
+use self::std_buf::RawBuf;
 
 const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 
@@ -108,19 +106,18 @@ const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 ///
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
-pub struct BufReader<R, Rs = DefaultReadStrategy, Ms = DefaultMoveStrategy>{
+pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
     // First field for null pointer optimization.
     buf: Buffer,
     inner: R,
-    read_strat: Rs,
-    move_strat: Ms,
+    policy: P,
 }
 
-impl<R> BufReader<R, DefaultReadStrategy, DefaultMoveStrategy> {
+impl<R> BufReader<R> {
     /// Create a new `BufReader` wrapping `inner`, with a buffer of a
     /// default capacity and the default strategies.
     pub fn new(inner: R) -> Self {
-        Self::with_strategies(inner, Default::default(), Default::default())
+        Self::with_policy(inner, Default::default())
     }
 
     /// Create a new `BufReader` wrapping `inner` with a capacity
@@ -129,15 +126,15 @@ impl<R> BufReader<R, DefaultReadStrategy, DefaultMoveStrategy> {
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
     pub fn with_capacity(cap: usize, inner: R) -> Self {
-        Self::with_cap_and_strategies(inner, cap, Default::default(), Default::default())
+        Self::with_cap_and_policy(inner, cap, Default::default())
     }
 }
 
-impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
+impl<R, P: ReaderPolicy> BufReader<R, P> {
     /// Create a new `BufReader` wrapping `inner`, with a default buffer capacity
-    /// and with the given `ReadStrategy` and `MoveStrategy`.
-    pub fn with_strategies(inner: R, rs: Rs, ms: Ms) -> Self {
-        Self::with_cap_and_strategies(inner, DEFAULT_BUF_SIZE, rs, ms)
+    /// and with the given `ReaderPolicy`.
+    pub fn with_policy(inner: R, policy: P) -> Self {
+        Self::with_cap_and_policy(inner, DEFAULT_BUF_SIZE, policy)
     }
 
     /// Create a new `BufReader` wrapping `inner`, with a buffer capacity of *at least*
@@ -145,44 +142,27 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     /// 
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
-    pub fn with_cap_and_strategies(inner: R, cap: usize, rs: Rs, ms: Ms) -> Self {
+    pub fn with_cap_and_policy(inner: R, cap: usize, policy: P) -> Self {
         BufReader {
-            inner: inner,
+            inner,
             buf: Buffer::with_capacity(cap),
-            read_strat: rs,
-            move_strat: ms,
+            policy,
         }
     }
 
-    /// Apply a new `MoveStrategy` to this `BufReader`, returning the transformed type.
-    pub fn move_strategy<Ms_: MoveStrategy>(self, ms: Ms_) -> BufReader<R, Rs, Ms_> {
+    /// Apply a new `ReaderPolicy` to this `BufReader`, returning the transformed type.
+    pub fn set_policy<P_: ReaderPolicy>(self, policy: P_) -> BufReader<R, P_> {
         BufReader { 
             inner: self.inner,
             buf: self.buf,
-            read_strat: self.read_strat,
-            move_strat: ms,
+            policy
         }
     }
 
-    /// Apply a new `ReadStrategy` to this `BufReader`, returning the transformed type.
-    pub fn read_strategy<Rs_: ReadStrategy>(self, rs: Rs_) -> BufReader<R, Rs_, Ms> {
-        BufReader { 
-            inner: self.inner,
-            buf: self.buf,
-            read_strat: rs,
-            move_strat: self.move_strat,
-        }
-    }
-
-    /// Accessor for updating the `MoveStrategy` in-place.
+    /// Accessor for updating the `ReaderPolicy` in-place.
     ///
-    /// If you want to change the type, use `.move_strategy()`.
-    pub fn move_strategy_mut(&mut self) -> &mut Ms { &mut self.move_strat }
-
-    /// Accessor for updating the `ReadStrategy` in-place.
-    ///
-    /// If you want to change the type, use `.read_strategy()`.
-    pub fn read_strategy_mut(&mut self) -> &mut Rs { &mut self.read_strat }
+    /// If you want to change the type, use `.set_policy()`.
+    pub fn policy_mut(&mut self) -> &mut P { &mut self.policy }
 
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
@@ -210,7 +190,7 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     }
 
     /// Get the current number of bytes available in the buffer.
-    pub fn available(&self) -> usize {
+    pub fn buf_len(&self) -> usize {
         self.buf.buffered()
     }
 
@@ -253,91 +233,81 @@ impl<R, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
     }
 
     #[inline]
-    fn should_read(&self) -> bool {
-        self.read_strat.should_read(&self.buf)
-    }
-
-    #[inline]
-    fn should_move(&self) -> bool {
-        self.move_strat.should_move(&self.buf)
+    fn should_read(&mut self) -> bool {
+        self.policy.before_read(&mut self.buf).0
     }
 }
 
-impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufReader<R, Rs, Ms> {
-    /// Unconditionally perform a read into the buffer, calling `.make_room()`
-    /// if appropriate or necessary, as determined by the implementation.
+impl<R: Read, P: ReaderPolicy> BufReader<R, P> {
+    /// Unconditionally perform a read into the buffer.
     ///
+    /// Does not invoke `ReaderPolicy` methods.
+    /// 
     /// If the read was successful, returns the number of bytes read.
-    pub fn read_into_buf(&mut self) -> io::Result<usize> { 
-        if self.should_move() {
-            self.make_room();
-        }
-        
+    pub fn read_into_buf(&mut self) -> io::Result<usize> {
         self.buf.read_from(&mut self.inner)
     }
 }
 
-impl<R: Read, Rs, Ms> BufReader<R, Rs, Ms> {
+impl<R: Read, P> BufReader<R, P> {
     /// Box the inner reader without losing data.
-    pub fn boxed<'a>(self) -> BufReader<Box<Read + 'a>, Rs, Ms> where R: 'a {
+    pub fn boxed<'a>(self) -> BufReader<Box<Read + 'a>, P> where R: 'a {
         let inner: Box<Read + 'a> = Box::new(self.inner);
         
         BufReader {
-            inner: inner,
+            inner,
             buf: self.buf,
-            read_strat: self.read_strat,
-            move_strat: self.move_strat,
+            policy: self.policy,
         }
     }
 }
 
-impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> Read for BufReader<R, Rs, Ms> {
+impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        // If we don't have any buffered data and we're doing a massive read
-        // (larger than our internal buffer), bypass our internal buffer
-        // entirely.
-        if self.buf.is_empty() && out.len() > self.buf.capacity() {
+        // If we don't have any buffered data and we're doing a read matching
+        // or exceeding the internal buffer's capacity, bypass the buffer.
+        if self.buf.is_empty() && out.len() >= self.buf.capacity() {
             return self.inner.read(out);
         }
 
-        let nread = {
-            let mut rem = try!(self.fill_buf());
-            try!(rem.read(out))
-        };
+        let nread = self.fill_buf()?.read(out)?;
         self.consume(nread);
         Ok(nread)
     }
 }
 
-impl<R: Read, Rs: ReadStrategy, Ms: MoveStrategy> BufRead for BufReader<R, Rs, Ms> {
+impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
-        if self.should_read() {
-            let _ = try!(self.read_into_buf());
+        // This execution order is important; the policy may want to resize the buffer or move data
+        // before reading into it.
+        while self.should_read() && self.buf.headroom() > 0 {
+            self.read_into_buf()?;
         }
 
         Ok(self.get_buf())
     }
 
-    fn consume(&mut self, amt: usize) {
+    fn consume(&mut self, mut amt: usize) {
+        amt = cmp::min(amt, self.buf_len());
         self.buf.consume(amt);
+        self.policy.after_consume(&mut self.buf, amt);
     }
 }
 
-impl<R: fmt::Debug, Rs: ReadStrategy, Ms: MoveStrategy> fmt::Debug for BufReader<R, Rs, Ms> {
+impl<R: fmt::Debug, P: ReaderPolicy + fmt::Debug> fmt::Debug for BufReader<R, P> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("buf_redux::BufReader")
             .field("reader", &self.inner)
-            .field("available", &self.available())
+            .field("buffered", &self.buf_len())
             .field("capacity", &self.capacity())
-            .field("read_strategy", &self.read_strat)
-            .field("move_strategy", &self.move_strat)
+            .field("policy", &self.policy)
             .finish()
     }
 }
 
-impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> {
+impl<R: Seek, P: ReaderPolicy> Seek for BufReader<R, P> {
     /// Seek to an offset, in bytes, in the underlying reader.
     ///
     /// The position used for seeking with `SeekFrom::Current(_)` is the
@@ -359,7 +329,7 @@ impl<R: Seek, Rs: ReadStrategy, Ms: MoveStrategy> Seek for BufReader<R, Rs, Ms> 
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let result: u64;
         if let SeekFrom::Current(n) = pos {
-            let remainder = self.available() as i64;
+            let remainder = self.buf_len() as i64;
             // it should be safe to assume that remainder fits within an i64 as the alternative
             // means we managed to allocate 8 ebibytes and that's absurd.
             // But it's not out of the realm of possibility for some weird underlying reader to
@@ -421,7 +391,7 @@ impl<T> ops::DerefMut for AssertSome<T> {
 }
 
 /// A drop-in replacement for `std::io::BufWriter` with more functionality.
-pub struct BufWriter<W: Write, Fs: FlushStrategy = DefaultFlushStrategy> {
+pub struct BufWriter<W: Write, Fs: WriterPolicy = DefaultFlushStrategy> {
     buf: Buffer,
     inner: AssertSome<W>,
     flush_strat: Fs,
@@ -440,7 +410,7 @@ impl<W: Write> BufWriter<W, DefaultFlushStrategy> {
     }
 }
 
-impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
+impl<W: Write, Fs: WriterPolicy> BufWriter<W, Fs> {
     /// Wrap `inner` with the default buffer capacity and given flush strategy
     pub fn with_strategy(inner: W, flush_strat: Fs) -> Self {
         Self::with_capacity_and_strategy(DEFAULT_BUF_SIZE, inner, flush_strat)
@@ -457,7 +427,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     }
 
     /// Set a new `FlushStrategy`, returning the transformed type.
-    pub fn flush_strategy<Fs_: FlushStrategy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
+    pub fn flush_strategy<Fs_: WriterPolicy>(mut self, flush_strat: Fs_) -> BufWriter<W, Fs_> {
         BufWriter {
             inner: AssertSome::take_self(&mut self.inner),
             buf: mem::replace(&mut self.buf, Buffer::with_capacity(0)),
@@ -539,7 +509,7 @@ impl<W: Write, Fs: FlushStrategy> BufWriter<W, Fs> {
     }
 }
 
-impl<W: Write, Fs: FlushStrategy> Write for BufWriter<W, Fs> {
+impl<W: Write, Fs: WriterPolicy> Write for BufWriter<W, Fs> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.flush_strat.flush_before(&self.buf, buf.len()) {
             try!(self.flush_buf());
@@ -561,7 +531,7 @@ impl<W: Write, Fs: FlushStrategy> Write for BufWriter<W, Fs> {
     }
 }
 
-impl<W: Write + Seek, Fs: FlushStrategy> Seek for BufWriter<W, Fs> {
+impl<W: Write + Seek, Fs: WriterPolicy> Seek for BufWriter<W, Fs> {
     /// Seek to the offset, in bytes, in the underlying writer.
     ///
     /// Seeking always writes out the internal buffer before seeking.
@@ -570,7 +540,7 @@ impl<W: Write + Seek, Fs: FlushStrategy> Seek for BufWriter<W, Fs> {
     }
 }
 
-impl<W: fmt::Debug + Write, Fs: FlushStrategy> fmt::Debug for BufWriter<W, Fs> {
+impl<W: fmt::Debug + Write, Fs: WriterPolicy> fmt::Debug for BufWriter<W, Fs> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufWriter")
             .field("writer", &*self.inner)
@@ -580,7 +550,7 @@ impl<W: fmt::Debug + Write, Fs: FlushStrategy> fmt::Debug for BufWriter<W, Fs> {
     }
 }
 
-impl<W: Write, Fs: FlushStrategy> Drop for BufWriter<W, Fs> {
+impl<W: Write, Fs: WriterPolicy> Drop for BufWriter<W, Fs> {
     fn drop(&mut self) {
         if AssertSome::is_some(&self.inner) && !self.panicked {
             // dtors should not panic, so we ignore a failed flush
@@ -775,9 +745,7 @@ impl Buffer {
         self.check_cursors();
 
         // Returns `false` if we reallocated out-of-place and thus need to re-zero.
-        if !self.buf.resize(self.end, additional) {
-            self.zeroed = 0;
-        }
+        self.buf.resize(self.end, additional);
     }
 
     /// Reset the cursors if there is no data remaining.
@@ -1059,42 +1027,8 @@ pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
     Ok(total_copied)
 }
 
-/// A trait which `Buffer` can use to determine whether or not
-/// it is safe to elide zeroing of its buffer.
-///
-/// Has a default implementation of `is_trusted()` which always returns `false`.
-///
-/// Use the `nightly` feature to enable specialization, which means this
-/// trait can be implemented for specifically trusted types from the stdlib
-/// and potentially elsewhere.
-///
-/// ###Motivation
-/// As part of its intended operation, `Buffer` can pass a potentially
-/// uninitialized slice of its buffer to `Read::read()`. Untrusted readers could access sensitive
-/// information in this slice, from previous usage of that region of memory,
-/// which has not been overwritten yet. Thus, the uninitialized parts of the buffer need to be zeroed
-/// to prevent unintentional leakage of information.
-///
-/// However, for trusted readers which are known to only write to this slice and not read from it,
-/// such as various types in the stdlib which will pass the slice directly to a syscall,
-/// this zeroing is an unnecessary waste of cycles which the optimizer may or may not elide properly.
-///
-/// This trait helps `Buffer` determine whether or not a particular reader is trustworthy.
-pub unsafe trait TrustRead: Read {
-    /// Return `true` if this reader does not need a zeroed slice passed to `.read()`.
-    fn is_trusted(&self) -> bool;
-}
-
 #[cfg(not(feature = "nightly"))]
-unsafe impl<R: Read> TrustRead for R {
-    /// Default impl which always returns `false`.
-    ///
-    /// Enable the `nightly` feature to specialize this impl for various types.
-    fn is_trusted(&self) -> bool {
-        false
-    }
+fn init_buffer<R: Read>(_r: &R, buf: &mut [u8]) {
+    // we can't trust a reader without nightly
+    safemem::write_bytes(buf, 0);
 }
-
-#[cfg(feature = "nightly")]
-pub use nightly::AssertTrustRead;
-
