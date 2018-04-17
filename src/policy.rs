@@ -5,14 +5,12 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-//! Types which can be used to tune the behavior of `BufReader`.
+//! Types which can be used to tune the behavior of `BufReader` and `BufWriter`.
 //!
-//! Some simple strategies are provided for your convenience. You may prefer to create your own
+//! Some simple policies are provided for your convenience. You may prefer to create your own
 //! types and implement the traits for them instead.
 
 use super::Buffer;
-
-use std::{fmt, ops};
 
 /// Flag for `ReaderPolicy` methods to signal whether or not `BufReader` should read into the buffer.
 ///
@@ -33,7 +31,7 @@ macro_rules! do_read (
 pub struct StdPolicy;
 
 /// Trait that governs `BufReader`'s behavior.
-pub trait ReaderPolicy: Default + fmt::Debug {
+pub trait ReaderPolicy {
     /// Consulted before attempting to read into the buffer.
     ///
     /// Return `DoRead(true)` to issue a read into the buffer
@@ -46,25 +44,24 @@ pub trait ReaderPolicy: Default + fmt::Debug {
     /// to read into the buffer. If successful (`Ok(x)` where `x > 0` is returned), this method will
     /// be consulted again for another read attempt.
     ///
+    /// By default, implements `std::io::BufReader`'s behavior: only read into the buffer if
+    /// it is empty.
+    ///
     /// ### Note
     /// If the read will ignore the buffer entirely (if the buffer is empty and the amount to be
     /// read matches or exceeds its capacity) or if `BufReader::read_into_buf()` was called to force
     /// a read into the buffer manually, this method will not be called.
-    fn before_read(&mut self, buffer: &mut Buffer) -> DoRead;
+    fn before_read(&mut self, buffer: &mut Buffer) -> DoRead { DoRead(buffer.len() == 0) }
 
     /// Called after bytes are consumed from the buffer.
     ///
     /// Supplies the true amount consumed if the amount passed to `BufReader::consume`
     /// was in excess.
-    fn after_consume(&mut self, buffer: &mut Buffer, amt: usize) {}
+    fn after_consume(&mut self, _buffer: &mut Buffer, _amt: usize) {}
 }
 
 /// Behavior of `std::io::BufReader`: the buffer will only be read into if it is empty.
-impl ReaderPolicy for StdPolicy {
-    fn before_read(&mut self, buffer: &mut Buffer) -> DoRead {
-        DoRead(buffer.buffered() == 0)
-    }
-}
+impl ReaderPolicy for StdPolicy {}
 
 /// A `ReaderPolicy` which ensures there are at least this many bytes in the buffer,
 /// failing this only if the reader is at EOF.
@@ -72,6 +69,7 @@ impl ReaderPolicy for StdPolicy {
 pub struct MinBuffered(pub usize);
 
 impl MinBuffered {
+    /// Set the number of bytes to ensure are in the buffer.
     pub fn set_min(&mut self, min: usize) {
         self.0 = min;
     }
@@ -79,43 +77,51 @@ impl MinBuffered {
 
 impl ReaderPolicy for MinBuffered {
     fn before_read(&mut self, buffer: &mut Buffer) -> DoRead {
-        min_buffered_impl(buffer, self.0)
+        let cap = buffer.capacity();
+
+        if buffer.free_space() >= self.0 {
+            buffer.make_room();
+        } else if cap < self.0 {
+            buffer.reserve(self.0 - cap);
+        }
+
+        DoRead(buffer.len() < self.0)
     }
 }
 
 /// A trait which tells `BufWriter` when to flush.
-pub trait WriterPolicy: Default + fmt::Debug {
+pub trait WriterPolicy {
     /// Return `true` if the buffer should be flushed before reading into it.
     ///
     /// The buffer is provided, as well as `incoming` which is
     /// the size of the buffer that will be written to the `BufWriter`.
-    fn flush_before(&self, _buf: &Buffer, _incoming: usize) -> bool;
+    ///
+    /// By default, flushes the buffer if the usable space is smaller than the incoming write.
+    fn flush_before(&mut self, buf: &mut Buffer, incoming: usize) -> bool {
+        buf.usable_space() < incoming
+    }
 
     /// Return `true` if the buffer should be flushed after reading into it.
     ///
     /// `buf` references the updated buffer after the read.
     ///
     /// Default impl is a no-op.
-    fn flush_after(&self, _buf: &Buffer) -> bool {
+    fn flush_after(&mut self, _buf: &Buffer) -> bool {
         false
     }
 }
 
 /// Default behavior of `std::io::BufWriter`: flush before a read into the buffer
-/// only if the incoming data is larger than the buffer's headroom.
-impl WriterPolicy for StdPolicy {
-    fn flush_before(&self, buf: &Buffer, incoming: usize) -> bool {
-        buf.headroom() <= incoming
-    }
-}
+/// only if the incoming data is larger than the buffer's writable space.
+impl WriterPolicy for StdPolicy {}
 
 /// Flush the buffer if it contains at least the given number of bytes.
 #[derive(Debug, Default)]
 pub struct FlushAtLeast(pub usize);
 
 impl WriterPolicy for FlushAtLeast {
-    fn flush_after(&self, buf: &Buffer, _: usize) -> bool {
-        buf.buffered() > self.0
+    fn flush_after(&mut self, buf: &Buffer) -> bool {
+        buf.len() > self.0
     }
 }
 
@@ -126,12 +132,7 @@ impl WriterPolicy for FlushAtLeast {
 pub struct FlushOn(pub u8);
 
 impl WriterPolicy for FlushOn {
-    /// Same as `StdPolicy`.
-    fn flush_before(&self, buf: &Buffer, incoming: usize) -> bool {
-        buf.headroom() < incoming
-    }
-
-    fn flush_after(&self, buf: &Buffer) -> bool {
+    fn flush_after(&mut self, buf: &Buffer) -> bool {
         ::memchr::memrchr(self.0, buf.buf()).is_some()
     }
 }
@@ -143,12 +144,7 @@ impl WriterPolicy for FlushOn {
 pub struct FlushOnNewline;
 
 impl WriterPolicy for FlushOnNewline {
-    /// Same as `StdPolicy`.
-    fn flush_before(&self, buf: &Buffer, incoming: usize) -> bool {
-        buf.headroom() < incoming
-    }
-
-    fn flush_after(&self, buf: &Buffer) -> bool {
+    fn flush_after(&mut self, buf: &Buffer) -> bool {
         ::memchr::memrchr(b'\n', buf.buf()).is_some()
     }
 }

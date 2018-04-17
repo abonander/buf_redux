@@ -29,7 +29,7 @@ impl<W: Write, Fs: WriterPolicy> fmt::Debug for BufWriter<W, Fs> {
         f.debug_struct("buf_redux::BufWriter")
             .field("writer", &"(no Debug impl)")
             .field("capacity", &self.capacity())
-            .field("flush_strategy", &self.flush_strat)
+            .field("flush_strategy", &self.policy)
             .finish()
     }
 }
@@ -43,7 +43,7 @@ impl<W: Write> fmt::Debug for LineWriter<W> {
     }
 }
 
-pub fn init_buffer<R: Read>(rdr: &R, buf: &mut [u8]) {
+pub fn init_buffer<R: Read + ?Sized>(rdr: &R, buf: &mut [u8]) {
     // no invariants for consumers to uphold:
     // https://doc.rust-lang.org/nightly/std/io/trait.Read.html#method.initializer
     unsafe { rdr.initializer().initialize(buf) }

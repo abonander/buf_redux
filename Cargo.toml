@@ -20,8 +20,10 @@ safemem = "0.2"
 memchr = "1.0"
 
 # `slice_deque` is only supported on platforms with virtual memory
-[target.`cfg(any(unix, windows))`.dependencies.slice-deque]
+[target.'cfg(any(unix, windows))'.dependencies.slice-deque]
 git = "https://github.com/gnzlbg/slice_deque"
+optional = true
 
 [features]
-nightly = ["slice_deque/unstable"]
+nightly = ["slice-deque/unstable"]
+default = ["slice-deque"]

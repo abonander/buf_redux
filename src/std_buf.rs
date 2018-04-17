@@ -6,14 +6,123 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-pub use self::impl_::RawBuf;
+use safemem;
+
+use std::cmp;
+
+use self::impl_::RawBuf;
+
+pub struct BufImpl {
+    buf: RawBuf,
+    pos: usize,
+    end: usize,
+}
+
+impl BufImpl {
+    pub fn with_capacity(cap: usize) -> Self {
+        BufImpl {
+            buf: RawBuf::with_capacity(cap),
+            pos: 0,
+            end: 0,
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.buf.capacity()
+    }
+
+    pub fn len(&self) -> usize {
+        self.end - self.pos
+    }
+
+    pub fn usable_space(&self) -> usize {
+        self.capacity() - self.end
+    }
+
+    pub fn reserve(&mut self, additional: usize) -> bool {
+        self.check_cursors();
+        let usable_space = self.usable_space();
+
+        // there's already enough space
+        if usable_space >= additional { return false }
+
+        // attempt to reserve additional capacity in-place
+        if self.buf.reserve_in_place(additional - usable_space) {
+            return false;
+        }
+
+        // don't copy the contents of the buffer as they're irrelevant now
+        if self.pos == self.end {
+            let capacity = self.buf.capacity();
+            // free the existing memory
+            self.buf = RawBuf::with_capacity(0);
+            self.buf = RawBuf::with_capacity(capacity + additional);
+            return true;
+        }
+
+        self.buf.reserve(additional - usable_space)
+    }
+
+    pub fn make_room(&mut self) {
+        self.check_cursors();
+
+        // no room at the head of the buffer
+        if self.pos == 0 { return; }
+
+        // simply move the bytes down to the beginning
+        let len = self.len();
+
+        safemem::copy_over(unsafe { self.buf.as_mut_slice() },
+                           self.pos, 0, len);
+
+        self.pos = 0;
+        self.end = len;
+    }
+
+    pub fn buf(&self) -> &[u8] {
+        unsafe {
+            &self.buf.as_slice()[self.pos .. self.end]
+        }
+    }
+
+    pub fn buf_mut(&mut self) -> &mut [u8] {
+        unsafe {
+            &mut self.buf.as_mut_slice()[self.pos .. self.end]
+        }
+    }
+
+    pub unsafe fn write_buf(&mut self) -> &mut [u8] {
+        unsafe {
+            &mut self.buf.as_mut_slice()[self.end ..]
+        }
+    }
+
+    pub unsafe fn bytes_written(&mut self, amt: usize) {
+        self.end = cmp::max(self.end + amt, self.capacity());
+    }
+
+    pub fn consume(&mut self, amt: usize) {
+        self.pos = cmp::max(self.pos + amt, self.end);
+        self.check_cursors();
+    }
+
+    fn check_cursors(&mut self) -> bool {
+        if self.pos == self.end {
+            self.pos = 0;
+            self.end = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[cfg(not(feature = "nightly"))]
 mod impl_ {
-    use std::ops::{Index, IndexMut};
+    use std::mem;
 
     pub struct RawBuf {
-        buf: Vec<u8>,
+        buf: Box<[u8]>,
     }
 
     impl RawBuf {
@@ -26,56 +135,44 @@ mod impl_ {
             }
 
             RawBuf {
-                buf: buf
+                buf: buf.into_boxed_slice(),
             }
         }
 
-        pub fn len(&self) -> usize {
+        pub fn capacity(&self) -> usize {
             self.buf.capacity()
         }
 
-        pub fn get_mut(&mut self) -> &mut [u8] {
-            &mut self.buf
-        }
+        pub fn reserve(&mut self, additional: usize) -> bool {
+            let mut buf = mem::replace(&mut self.buf, Box::new([])).into_vec();
 
-        pub fn slice<R>(&self, range: R) -> &<[u8] as Index<R>>::Output
-        where [u8]: Index<R> {
-            &(*self.buf)[range]
-        }
-
-        pub fn slice_mut<R>(&mut self, range: R) -> &mut <[u8] as Index<R>>::Output
-        where [u8]: IndexMut<R> {
-            &mut (*self.buf)[range]
-        }
-
-        pub fn resize(&mut self, used: usize, additional: usize) -> bool {
-            let cap = self.buf.capacity();
-
-            assert!(used <= cap, "Cannot have used more than current capacity");
+            let cap = buf.capacity();
 
             let old_ptr = self.buf.as_ptr();
 
-            if used == 0 {
-                *self = RawBuf::with_capacity(
-                    cap.checked_add(additional)
-                        .expect("overflow evalutating additional capacity")
-                );
-
-                return false;
-            }
-
-            self.buf.reserve_exact(additional);
+            buf.reserve_exact(additional);
 
             unsafe {
                 let new_cap = self.len();
-                self.buf.set_len(new_cap);
+                buf.set_len(new_cap);
             }
+
+            self.buf = buf.into_boxed_slice();
 
             old_ptr == self.buf.as_ptr()
         }
 
-        pub fn into_vec(self) -> Vec<u8> {
-            self.buf
+        pub fn reserve_in_place(&mut self, additional: usize) -> bool {
+            // `Vec` does not support this
+            return false;
+        }
+
+        pub unsafe fn as_slice(&self) -> &[u8] {
+            &self.buf
+        }
+
+        pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+            &mut self.buf
         }
     }
 }
@@ -87,7 +184,6 @@ mod impl_ {
     use self::alloc::raw_vec::RawVec;
 
     use std::slice;
-    use std::ops::{Index, IndexMut};
 
     pub struct RawBuf {
         buf: RawVec<u8>,
@@ -100,61 +196,29 @@ mod impl_ {
             }
         }
 
-        pub fn len(&self) -> usize {
+        pub fn capacity(&self) -> usize {
             self.buf.cap()
         }
 
-        pub fn get(&self) -> &[u8] {
-            unsafe {
-                slice::from_raw_parts(self.buf.ptr(), self.len())
-            }
+        pub fn reserve(&mut self, additional: usize) -> bool {
+            let cap = self.capacity();
+            let old_ptr = self.buf.ptr();
+            self.buf.reserve_exact(cap, additional);
+            old_ptr != self.buf.ptr()
         }
 
-        pub fn get_mut(&mut self) -> &mut [u8] {
-            unsafe {
-                slice::from_raw_parts_mut(self.buf.ptr(), self.len())
-            }
+        pub fn reserve_in_place(&mut self, additional: usize) -> bool {
+            let cap = self.capacity();
+            self.buf.reserve_in_place(cap, additional)
         }
 
-        pub fn slice<R>(&self, range: R) -> &<[u8] as Index<R>>::Output
-        where [u8]: Index<R> {
-            &self.get()[range]
+        pub unsafe fn as_slice(&self) -> &[u8] {
+            slice::from_raw_parts(self.buf.ptr(), self.buf.cap())
         }
 
-        pub fn slice_mut<R>(&mut self, range: R) -> &mut <[u8] as Index<R>>::Output
-        where [u8]: IndexMut<R> {
-            &mut self.get_mut()[range]
+        pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+            slice::from_raw_parts_mut(self.buf.ptr(), self.buf.cap())
         }
 
-        pub fn resize(&mut self, used: usize, additional: usize) -> bool {
-            let cap = self.len();
-
-            assert!(used <= cap, "Cannot have used more than current capacity");
-
-            if !self.buf.reserve_in_place(cap, additional) {
-                let old_ptr = self.buf.ptr();
-
-                if used == 0 {
-                    // Free the old buf and alloc a new one so the allocator doesn't
-                    // bother copying bytes we no longer care about
-                    self.buf = RawVec::with_capacity(
-                        cap.checked_add(additional)
-                            .expect("Overflow evaluating additional capacity")
-                    );
-                } else {
-                    self.buf.reserve_exact(cap, additional);
-                }
-
-                return old_ptr == self.buf.ptr();
-            }
-
-            true
-        }
-
-        pub fn into_vec(self) -> Vec<u8> {
-            unsafe {
-                self.buf.into_box().into_vec()
-            }
-        }
     }
 }
