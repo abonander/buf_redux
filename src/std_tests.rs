@@ -10,9 +10,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! These tests are copied from rust/src/libstd/io/buffered.rs
+//! They assume exact capacity allocation
+
 use std::io::prelude::*;
 use std::io::{self, SeekFrom};
-use super::{BufReader, BufWriter};
+use {BufReader, BufWriter};
 
 /// A dummy reader intended at testing short-reads propagation.
 pub struct ShortReader {

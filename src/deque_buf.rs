@@ -14,6 +14,8 @@
 extern crate slice_deque;
 use self::slice_deque::SliceDeque;
 
+use std::cmp;
+
 pub struct BufImpl {
     deque: SliceDeque<u8>,
 }
@@ -53,16 +55,24 @@ impl BufImpl {
     }
 
     pub unsafe fn bytes_written(&mut self, add: usize) {
-        let offset = add as isize;
+        let offset = cmp::min(add, self.usable_space()) as isize;
 
         if offset < 0 {
-            panic!("BufImpl.bytes_written() arg overflowed isize");
+            panic!("BufImpl.bytes_written() arg overflowed isize: {:x}", add);
         }
 
         self.deque.move_tail(offset);
     }
 
     pub fn consume(&mut self, amt: usize) {
-        self.deque.truncate_front(amt);
+        unsafe {
+            let offset = cmp::min(amt, self.len()) as isize;
+
+            if offset < 0 {
+                panic!("BufImpl.consume() arg overflowed isize: {:x}", amt)
+            }
+
+            self.deque.move_head(offset);
+        }
     }
 }

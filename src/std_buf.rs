@@ -98,11 +98,11 @@ impl BufImpl {
     }
 
     pub unsafe fn bytes_written(&mut self, amt: usize) {
-        self.end = cmp::max(self.end + amt, self.capacity());
+        self.end = cmp::min(self.end + amt, self.capacity());
     }
 
     pub fn consume(&mut self, amt: usize) {
-        self.pos = cmp::max(self.pos + amt, self.end);
+        self.pos = cmp::min(self.pos + amt, self.end);
         self.check_cursors();
     }
 
@@ -140,7 +140,7 @@ mod impl_ {
         }
 
         pub fn capacity(&self) -> usize {
-            self.buf.capacity()
+            self.buf.len()
         }
 
         pub fn reserve(&mut self, additional: usize) -> bool {
@@ -153,7 +153,7 @@ mod impl_ {
             buf.reserve_exact(additional);
 
             unsafe {
-                let new_cap = self.len();
+                let new_cap = buf.capacity();
                 buf.set_len(new_cap);
             }
 
@@ -221,4 +221,19 @@ mod impl_ {
         }
 
     }
+}
+
+#[test]
+fn read_into_full() {
+    use Buffer;
+
+    let mut buffer = Buffer::with_capacity(1);
+
+    assert_eq!(buffer.capacity(), 1);
+
+    let mut bytes = &[1u8, 2];
+
+    // Result<usize, io::Error> does not impl PartialEq
+    assert_eq!(buffer.read_from(&mut bytes).unwrap(), 1);
+    assert_eq!(buffer.read_from(&mut bytes).unwrap(), 0);
 }

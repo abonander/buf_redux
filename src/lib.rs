@@ -80,11 +80,9 @@ use std::{cmp, error, fmt, io, ops, mem};
 #[cfg(test)]
 mod benches;
 
-#[cfg(test)]
+// ::std::io's tests require exact allocation which slice_deque cannot provide
+#[cfg(all(test, any(not(any(unix, windows)), not(feature = "slice-deque"))))]
 mod std_tests;
-
-#[cfg(test)]
-mod tests;
 
 #[cfg(feature = "nightly")]
 mod nightly;
@@ -92,11 +90,11 @@ mod nightly;
 #[cfg(feature = "nightly")]
 use nightly::init_buffer;
 
-#[cfg(not(any(unix, windows)))]
+#[cfg(any(not(any(unix, windows)), not(feature = "slice-deque")))]
 #[path = "std_buf.rs"]
 mod buf_impl;
 
-#[cfg(any(unix, windows))]
+#[cfg(all(feature = "slice-deque", any(unix, windows)))]
 #[path = "deque_buf.rs"]
 mod buf_impl;
 
@@ -121,13 +119,13 @@ pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
 
 impl<R> BufReader<R> {
     /// Create a new `BufReader` wrapping `inner`, with a buffer of a
-    /// default capacity and the default strategies.
+    /// default capacity and the default `ReadPolicy`.
     pub fn new(inner: R) -> Self {
         Self::with_policy(inner, Default::default())
     }
 
     /// Create a new `BufReader` wrapping `inner` with a capacity
-    /// of *at least* `cap` bytes and the default strategies.
+    /// of *at least* `cap` bytes and the default `ReadPolicy`.
     ///
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
@@ -144,7 +142,7 @@ impl<R, P: ReaderPolicy> BufReader<R, P> {
     }
 
     /// Create a new `BufReader` wrapping `inner`, with a buffer capacity of *at least*
-    /// `cap` bytes and the given `ReadStrategy` and `MoveStrategy`.
+    /// `cap` bytes and the given `ReadPolicy`
     /// 
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
