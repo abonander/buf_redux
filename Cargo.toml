@@ -17,7 +17,7 @@ readme = "README.md"
 
 [dependencies]
 safemem = "0.2"
-memchr = "1.0"
+memchr = "2.0"
 
 # `slice_deque` is only supported on platforms with virtual memory
 [target.'cfg(any(unix, windows))'.dependencies.slice-deque]
