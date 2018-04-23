@@ -40,11 +40,11 @@ pub trait ReaderPolicy {
     ///
     /// If there is no room in the buffer after this method is called,
     /// the buffer will not be read into (so if the buffer is full but you want more data
-    /// you should resize it or call `.make_room()`). If there *is* room, `BufReader` will attempt
-    /// to read into the buffer. If successful (`Ok(x)` where `x > 0` is returned), this method will
-    /// be consulted again for another read attempt.
+    /// you should call `.make_room()` or reserve more space). If there *is* room, `BufReader` will
+    /// attempt to read into the buffer. If successful (`Ok(x)` where `x > 0` is returned), this
+    /// method will be consulted again for another read attempt.
     ///
-    /// By default, implements `std::io::BufReader`'s behavior: only read into the buffer if
+    /// By default, this implements `std::io::BufReader`'s behavior: only read into the buffer if
     /// it is empty.
     ///
     /// ### Note
@@ -65,6 +65,8 @@ impl ReaderPolicy for StdPolicy {}
 
 /// A `ReaderPolicy` which ensures there are at least this many bytes in the buffer,
 /// failing this only if the reader is at EOF.
+///
+/// If the minimum buffer length is greater than the buffer capacity, it will be resized.
 #[derive(Debug)]
 pub struct MinBuffered(pub usize);
 

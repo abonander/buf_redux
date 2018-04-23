@@ -12,34 +12,36 @@ use std::cmp;
 
 use self::impl_::RawBuf;
 
-pub struct BufImpl {
+use super::BufImpl;
+
+pub struct StdBuf {
     buf: RawBuf,
     pos: usize,
     end: usize,
 }
 
-impl BufImpl {
-    pub fn with_capacity(cap: usize) -> Self {
-        BufImpl {
+impl BufImpl for StdBuf {
+     fn with_capacity(cap: usize) -> Self {
+        StdBuf {
             buf: RawBuf::with_capacity(cap),
             pos: 0,
             end: 0,
         }
     }
 
-    pub fn capacity(&self) -> usize {
+     fn capacity(&self) -> usize {
         self.buf.capacity()
     }
 
-    pub fn len(&self) -> usize {
+     fn len(&self) -> usize {
         self.end - self.pos
     }
 
-    pub fn usable_space(&self) -> usize {
+     fn usable_space(&self) -> usize {
         self.capacity() - self.end
     }
 
-    pub fn reserve(&mut self, additional: usize) -> bool {
+     fn reserve(&mut self, additional: usize) -> bool {
         self.check_cursors();
         let usable_space = self.usable_space();
 
@@ -63,7 +65,7 @@ impl BufImpl {
         self.buf.reserve(additional - usable_space)
     }
 
-    pub fn make_room(&mut self) {
+     fn make_room(&mut self) {
         self.check_cursors();
 
         // no room at the head of the buffer
@@ -79,33 +81,35 @@ impl BufImpl {
         self.end = len;
     }
 
-    pub fn buf(&self) -> &[u8] {
+     fn buf(&self) -> &[u8] {
         unsafe {
             &self.buf.as_slice()[self.pos .. self.end]
         }
     }
 
-    pub fn buf_mut(&mut self) -> &mut [u8] {
+     fn buf_mut(&mut self) -> &mut [u8] {
         unsafe {
             &mut self.buf.as_mut_slice()[self.pos .. self.end]
         }
     }
 
-    pub unsafe fn write_buf(&mut self) -> &mut [u8] {
+     unsafe fn write_buf(&mut self) -> &mut [u8] {
         unsafe {
             &mut self.buf.as_mut_slice()[self.end ..]
         }
     }
 
-    pub unsafe fn bytes_written(&mut self, amt: usize) {
+     unsafe fn bytes_written(&mut self, amt: usize) {
         self.end = cmp::min(self.end + amt, self.capacity());
     }
 
-    pub fn consume(&mut self, amt: usize) {
+     fn consume(&mut self, amt: usize) {
         self.pos = cmp::min(self.pos + amt, self.end);
         self.check_cursors();
     }
+}
 
+impl StdBuf {
     fn check_cursors(&mut self) -> bool {
         if self.pos == self.end {
             self.pos = 0;

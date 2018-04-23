@@ -16,45 +16,52 @@ use self::slice_deque::SliceDeque;
 
 use std::cmp;
 
-pub struct BufImpl {
+use super::BufImpl;
+
+pub struct SliceDequeBuf {
     deque: SliceDeque<u8>,
 }
 
-impl BufImpl {
-    pub fn with_capacity(cap: usize) -> Self {
-        BufImpl {
+/// Move-free buffer utilizing the [`slice-deque`] crate.
+///
+/// Its usable space will always be equal to its free space.
+///
+/// This is only available on target platforms with virtual memory support,
+/// namely Windows, OS X and Linux.
+impl BufImpl for SliceDequeBuf {
+    fn with_capacity(cap: usize) -> Self {
+        SliceDequeBuf {
             deque: SliceDeque::with_capacity(cap),
         }
     }
 
-    pub fn capacity(&self) -> usize {
+    fn capacity(&self) -> usize {
         self.deque.capacity()
     }
 
-    pub fn len(&self) -> usize { self.deque.len() }
+    fn len(&self) -> usize { self.deque.len() }
 
-    pub fn usable_space(&self) -> usize {
+    fn usable_space(&self) -> usize {
         self.capacity() - self.len()
     }
 
-    pub fn reserve(&mut self, additional: usize) -> bool {
+    fn reserve(&mut self, additional: usize) -> bool {
         self.deque.reserve(additional);
         true
     }
 
-    pub fn make_room(&mut self) {
-        // no-op
-    }
+    /// This method is a no-op.
+    fn make_room(&mut self) {}
 
-    pub fn buf(&self) -> &[u8] { &self.deque }
+    fn buf(&self) -> &[u8] { &self.deque }
 
-    pub fn buf_mut(&mut self) -> &mut [u8] { &mut self.deque }
+    fn buf_mut(&mut self) -> &mut [u8] { &mut self.deque }
 
-    pub unsafe fn write_buf(&mut self) -> &mut [u8] {
+    unsafe fn write_buf(&mut self) -> &mut [u8] {
         self.deque.tail_head_slice()
     }
 
-    pub unsafe fn bytes_written(&mut self, add: usize) {
+    unsafe fn bytes_written(&mut self, add: usize) {
         let offset = cmp::min(add, self.usable_space()) as isize;
 
         if offset < 0 {
@@ -64,7 +71,7 @@ impl BufImpl {
         self.deque.move_tail(offset);
     }
 
-    pub fn consume(&mut self, amt: usize) {
+    fn consume(&mut self, amt: usize) {
         unsafe {
             let offset = cmp::min(amt, self.len()) as isize;
 
