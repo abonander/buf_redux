@@ -81,7 +81,7 @@ impl ReaderPolicy for MinBuffered {
     fn before_read(&mut self, buffer: &mut Buffer) -> DoRead {
         let cap = buffer.capacity();
 
-        if buffer.free_space() >= self.0 {
+        if buffer.usable_space() < self.0 && buffer.free_space() >= self.0 {
             buffer.make_room();
         } else if cap < self.0 {
             buffer.reserve(self.0 - cap);
