@@ -16,8 +16,6 @@ use self::slice_deque::SliceDeque;
 
 use std::cmp;
 
-use super::BufImpl;
-
 pub struct SliceDequeBuf {
     deque: SliceDeque<u8>,
 }
@@ -28,40 +26,40 @@ pub struct SliceDequeBuf {
 ///
 /// This is only available on target platforms with virtual memory support,
 /// namely Windows, OS X and Linux.
-impl BufImpl for SliceDequeBuf {
-    fn with_capacity(cap: usize) -> Self {
+impl SliceDequeBuf {
+    pub fn with_capacity(cap: usize) -> Self {
         SliceDequeBuf {
             deque: SliceDeque::with_capacity(cap),
         }
     }
 
-    fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.deque.capacity()
     }
 
-    fn len(&self) -> usize { self.deque.len() }
+    pub fn len(&self) -> usize { self.deque.len() }
 
-    fn usable_space(&self) -> usize {
+    pub fn usable_space(&self) -> usize {
         self.capacity() - self.len()
     }
 
-    fn reserve(&mut self, additional: usize) -> bool {
+    pub fn reserve(&mut self, additional: usize) -> bool {
         self.deque.reserve(additional);
         true
     }
 
     /// This method is a no-op.
-    fn make_room(&mut self) {}
+    pub fn make_room(&mut self) {}
 
-    fn buf(&self) -> &[u8] { &self.deque }
+    pub fn buf(&self) -> &[u8] { &self.deque }
 
-    fn buf_mut(&mut self) -> &mut [u8] { &mut self.deque }
+    pub fn buf_mut(&mut self) -> &mut [u8] { &mut self.deque }
 
-    unsafe fn write_buf(&mut self) -> &mut [u8] {
+    pub unsafe fn write_buf(&mut self) -> &mut [u8] {
         self.deque.tail_head_slice()
     }
 
-    unsafe fn bytes_written(&mut self, add: usize) {
+    pub unsafe fn bytes_written(&mut self, add: usize) {
         let offset = cmp::min(add, self.usable_space()) as isize;
 
         if offset < 0 {
@@ -71,7 +69,7 @@ impl BufImpl for SliceDequeBuf {
         self.deque.move_tail(offset);
     }
 
-    fn consume(&mut self, amt: usize) {
+    pub fn consume(&mut self, amt: usize) {
         unsafe {
             let offset = cmp::min(amt, self.len()) as isize;
 

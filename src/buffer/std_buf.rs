@@ -12,16 +12,14 @@ use std::cmp;
 
 use self::impl_::RawBuf;
 
-use super::BufImpl;
-
 pub struct StdBuf {
     buf: RawBuf,
     pos: usize,
     end: usize,
 }
 
-impl BufImpl for StdBuf {
-     fn with_capacity(cap: usize) -> Self {
+impl StdBuf {
+    pub fn with_capacity(cap: usize) -> Self {
         StdBuf {
             buf: RawBuf::with_capacity(cap),
             pos: 0,
@@ -29,19 +27,19 @@ impl BufImpl for StdBuf {
         }
     }
 
-     fn capacity(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         self.buf.capacity()
     }
 
-     fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.end - self.pos
     }
 
-     fn usable_space(&self) -> usize {
+    pub fn usable_space(&self) -> usize {
         self.capacity() - self.end
     }
 
-     fn reserve(&mut self, additional: usize) -> bool {
+    pub fn reserve(&mut self, additional: usize) -> bool {
         self.check_cursors();
         let usable_space = self.usable_space();
 
@@ -65,7 +63,7 @@ impl BufImpl for StdBuf {
         self.buf.reserve(additional - usable_space)
     }
 
-     fn make_room(&mut self) {
+    pub fn make_room(&mut self) {
         self.check_cursors();
 
         // no room at the head of the buffer
@@ -81,36 +79,32 @@ impl BufImpl for StdBuf {
         self.end = len;
     }
 
-     fn buf(&self) -> &[u8] {
+    pub fn buf(&self) -> &[u8] {
         unsafe {
             &self.buf.as_slice()[self.pos .. self.end]
         }
     }
 
-     fn buf_mut(&mut self) -> &mut [u8] {
+    pub fn buf_mut(&mut self) -> &mut [u8] {
         unsafe {
             &mut self.buf.as_mut_slice()[self.pos .. self.end]
         }
     }
 
-     unsafe fn write_buf(&mut self) -> &mut [u8] {
-        unsafe {
-            &mut self.buf.as_mut_slice()[self.end ..]
-        }
+    pub unsafe fn write_buf(&mut self) -> &mut [u8] {
+        &mut self.buf.as_mut_slice()[self.end ..]
     }
 
-     unsafe fn bytes_written(&mut self, amt: usize) {
+    pub unsafe fn bytes_written(&mut self, amt: usize) {
         self.end = cmp::min(self.end + amt, self.capacity());
     }
 
-     fn consume(&mut self, amt: usize) {
+    pub fn consume(&mut self, amt: usize) {
         self.pos = cmp::min(self.pos + amt, self.end);
         self.check_cursors();
     }
-}
 
-impl StdBuf {
-    fn check_cursors(&mut self) -> bool {
+    pub fn check_cursors(&mut self) -> bool {
         if self.pos == self.end {
             self.pos = 0;
             self.end = 0;
@@ -150,8 +144,6 @@ mod impl_ {
         pub fn reserve(&mut self, additional: usize) -> bool {
             let mut buf = mem::replace(&mut self.buf, Box::new([])).into_vec();
 
-            let cap = buf.capacity();
-
             let old_ptr = self.buf.as_ptr();
 
             buf.reserve_exact(additional);
@@ -166,7 +158,7 @@ mod impl_ {
             old_ptr == self.buf.as_ptr()
         }
 
-        pub fn reserve_in_place(&mut self, additional: usize) -> bool {
+        pub fn reserve_in_place(&mut self, _additional: usize) -> bool {
             // `Vec` does not support this
             return false;
         }
@@ -235,7 +227,7 @@ fn read_into_full() {
 
     assert_eq!(buffer.capacity(), 1);
 
-    let mut bytes = &[1u8, 2];
+    let mut bytes = &[1u8, 2][..];
 
     // Result<usize, io::Error> does not impl PartialEq
     assert_eq!(buffer.read_from(&mut bytes).unwrap(), 1);

@@ -5,6 +5,7 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+#![allow(missing_docs)]
 
 mod std_buf;
 
@@ -16,72 +17,115 @@ pub use self::std_buf::StdBuf;
 #[cfg(feature = "slice-deque")]
 pub use self::slice_deque_buf::SliceDequeBuf;
 
-/// Operations needed from a backing-buffer implementation.
-///
-/// The buffer is assumed to operate like a double-ended queue.
-pub trait BufImpl: Sized {
-    /// Allocate a new backing-buffer with the given capacity.
-    ///
-    /// The buffer is allowed to overallocate if it prefers but it should make this capacity
-    /// available.
-    fn with_capacity(cap: usize) -> Self;
+pub enum BufImpl {
+    Std(StdBuf),
+    #[cfg(feature = "slice-deque")]
+    Ringbuf(SliceDequeBuf),
+}
 
-    /// Return the number of bytes this buffer can hold in total.
-    fn capacity(&self) -> usize;
+macro_rules! forward_method {
+    (pub fn $fnname:ident(&self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
+        pub fn $fnname(&self $($args)*) $(-> $ret)* {
+            #[cfg(feature = "slice-deque")]
+            {
+                if let BufImpl::Ringbuf(ref buf) = *self {
+                    return buf.$fnname($($passargs)*);
+                }
+            }
 
-    /// Return the number of bytes this buffer currently holds.
-    ///
-    /// **Must** be equivalent to `self.buf().len()`.
-    fn len(&self) -> usize;
+            match self {
+                BufImpl::Std(ref buf) => buf.$fnname($($passargs)*),
+                _ => unreachable!(),
+            }
+        }
+    };
 
-    /// Return the amount of space available for writing into the buffer.
-    ///
-    /// **Must** be equivalent to `self.write_buf().len()`.
-    fn usable_space(&self) -> usize;
+    (pub fn $fnname:ident(&mut self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
+        pub fn $fnname(&mut self $($args)*) $(-> $ret)* {
+            #[cfg(feature = "slice-deque")]
+            {
+                if let BufImpl::Ringbuf(ref mut buf) = *self {
+                    return buf.$fnname($($passargs)*);
+                }
+            }
 
-    /// Increase the buffer's size enough to accommodate an additional number of bytes.
-    ///
-    /// Return `true` if the buffer had to reallocate in a different memory location,
-    /// false if the reallocation occurred in-place.
-    fn reserve(&mut self, additional: usize) -> bool;
+            match self {
+                BufImpl::Std(ref mut buf) => buf.$fnname($($passargs)*),
+                _ => unreachable!(),
+            }
+        }
+    };
 
-    /// If supported, increase the buffer's size enough to accommodate an additional number of bytes
-    /// without moving the allocation.
-    ///
-    /// If successful, return `true`; if a moving reallocation needs to be done or this operation
-    /// is not supported, return `false`.
-    fn reserve_in_place(&mut self, additional: usize) -> bool { false }
+    (pub unsafe fn $fnname:ident(&self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
+        pub unsafe fn $fnname(&self $($args)*) $(-> $ret)* {
+            #[cfg(feature = "slice-deque")]
+            {
+                if let BufImpl::Ringbuf(ref buf) = *self {
+                    return buf.$fnname($($passargs)*);
+                }
+            }
 
-    /// Do any sort of cleanup/moving necessary to regain wasted space in the buffer.
-    fn make_room(&mut self);
+            match self {
+                BufImpl::Std(ref buf) => buf.$fnname($($passargs)*),
+                _ => unreachable!(),
+            }
+        }
+    };
 
-    /// Return a view into the occupied portion of the buffer.
-    fn buf(&self) -> &[u8];
+    (pub unsafe fn $fnname:ident(&mut self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
+        pub unsafe fn $fnname(&mut self $($args)*) $(-> $ret)* {
+            #[cfg(feature = "slice-deque")]
+            {
+                if let BufImpl::Ringbuf(ref mut buf) = *self {
+                    return buf.$fnname($($passargs)*);
+                }
+            }
 
-    /// Return a mutable view into the occupied portion of the buffer.
-    fn buf_mut(&mut self) -> &mut [u8];
+            match self {
+                BufImpl::Std(ref mut buf) => buf.$fnname($($passargs)*),
+                _ => unreachable!(),
+            }
+        }
+    };
+}
 
-    /// Return a mutable view into the unoccupied/uninitialized portion of the buffer.
-    ///
-    /// ### Unsafety
-    /// This method can return a view into uninitialized data. Consumers should only write to this
-    /// slice, not read from it.
-    unsafe fn write_buf(&mut self) -> &mut [u8];
+macro_rules! forward_methods {
+    ($($($qualifiers:ident)+ ($($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*);+;) => (
+        $(forward_method! {
+            $($qualifiers)+ ($($args)*) [$($passargs)*] $(-> $ret)*
+        })*
+    )
+}
 
-    /// Extend the tail of the safe/occupied portion of the buffer by this many bytes.
-    ///
-    /// Called after data is written into the buffer returned by `write_buf()`.
-    ///
-    /// As a sanity check, this should panic if the number of additional bytes exceeds the capacity
-    /// of the buffer.
-    ///
-    /// ### Unsafety
-    /// The buffer may assume that the additional number of bytes were written to the head
-    /// of `write_buf()` and so it is safe to read them back.
-    unsafe fn bytes_written(&mut self, add: usize);
+impl BufImpl {
+    pub fn with_capacity(cap: usize) -> Self {
+        BufImpl::Std(StdBuf::with_capacity(cap))
+    }
 
-    /// Consume/drop the given number of bytes from the head of the buffer.
-    ///
-    /// May clamp the amount to `self.len()` or panic if its value is exceeded.
-    fn consume(&mut self, amt: usize);
+    #[cfg(feature = "slice-deque")]
+    pub fn with_capacity_ringbuf(cap: usize) -> Self {
+        BufImpl::Ringbuf(SliceDequeBuf::with_capacity(cap))
+    }
+
+    forward_methods! {
+        pub fn capacity(&self)[] -> usize;
+
+        pub fn len(&self)[] -> usize;
+
+        pub fn usable_space(&self)[] -> usize;
+
+        pub fn reserve(&mut self, additional: usize)[additional] -> bool;
+
+        pub fn make_room(&mut self)[];
+
+        pub fn buf(&self)[] -> &[u8];
+
+        pub fn buf_mut(&mut self)[] -> &mut [u8];
+
+        pub unsafe fn write_buf(&mut self)[] -> &mut [u8];
+
+        pub unsafe fn bytes_written(&mut self, add: usize)[add];
+
+        pub fn consume(&mut self, amt: usize)[amt];
+    }
 }

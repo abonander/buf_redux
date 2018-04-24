@@ -118,7 +118,7 @@ impl<R> BufReader<R, StdPolicy> {
     /// Create a new `BufReader` wrapping `inner`, with a buffer of a
     /// default capacity and the default `ReadPolicy`.
     pub fn new(inner: R) -> Self {
-        Self::with_capacity(cap, inner)
+        Self::with_capacity(DEFAULT_BUF_SIZE, inner)
     }
 
     /// Create a new `BufReader` wrapping `inner` with a capacity
@@ -127,17 +127,17 @@ impl<R> BufReader<R, StdPolicy> {
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
     pub fn with_capacity(cap: usize, inner: R) -> Self {
-        BufReader {
-            buf: Buffer::with_capacity(cap),
-            inner,
-            policy: StdPolicy,
-        }
+        Self::with_buffer(Buffer::with_capacity(cap), inner)
     }
 
     /// Allocate a buffer that never needs to move data to make room (consuming from the head
     /// immediately makes more room at the tail).
     ///
-    /// See `with_capacity_ringbuf()` for more.
+    /// This is useful in conjunction with `policy::MinBuffered` to ensure there is always room
+    /// to read more data if necessary, without expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice_deque` feature
+    /// enabled. See `Buffer::with_capacity_ringbuf()` for more info.
     #[cfg(feature = "slice_deque")]
     pub fn new_ringbuf(inner: R) -> Self {
         Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE, inner)
@@ -152,18 +152,21 @@ impl<R> BufReader<R, StdPolicy> {
     /// The capacity will be rounded up to the minimum size for the current platform (the next
     /// multiple of the page size, usually).
     ///
-    /// Implemented on top of [`slice_deque`] which uses virtual memory tricks to create
-    /// a ringbuffer that can always be viewed as a contiguous slice. See
-    /// [the `slice_deque` header at this crate's root][root-slice-deque] for a shortlist of
-    /// benefits and caveats, as well as `slice_deque`'s README for more details.
-    ///
-    /// [root-slice-deque]: index.html#slice_deque
+    /// Only available on platforms with virtual memory support and with the `slice_deque` feature
+    /// enabled. See `Buffer::with_capacity_ringbuf()` for more info.
     #[cfg(feature = "slice_deque")]
     pub fn with_capacity_ringbuf(cap: usize, inner: R) -> Self {
+        Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
+    }
+
+    /// Re-use an existing buffer with a new reader.
+    ///
+    /// ### Note
+    /// Does **not** clear the buffer first! If there is data already in the buffer
+    /// then it will be returned in `read()` and `fill_buf()`.
+    pub fn with_buffer(buf: Buffer, inner: R) -> Self {
         BufReader {
-            buf: Buffer::with_capacity_ringbuf(cap),
-            inner,
-            policy: StdPolicy,
+            buf, inner, policy: StdPolicy
         }
     }
 }
@@ -232,7 +235,7 @@ impl<R, P: ReaderPolicy> BufReader<R, P> {
     /// Consume `self` and return both the underlying reader and the buffer.
     ///
     /// See also: `BufReader::unbuffer()`
-    pub fn into_inner_with_buffer(self) -> (R, Buffer<B>) {
+    pub fn into_inner_with_buffer(self) -> (R, Buffer) {
         (self.inner, self.buf)
     }
 
@@ -251,7 +254,7 @@ impl<R, P: ReaderPolicy> BufReader<R, P> {
     }
 }
 
-impl<R: Read, P: ReaderPolicy, B: BufImpl> BufReader<R, P> {
+impl<R: Read, P: ReaderPolicy> BufReader<R, P> {
     /// Unconditionally perform a read into the buffer.
     ///
     /// Does not invoke `ReaderPolicy` methods.
@@ -273,7 +276,7 @@ impl<R: Read, P: ReaderPolicy, B: BufImpl> BufReader<R, P> {
     }
 }
 
-impl<R: Read, P: ReaderPolicy, B: BufImpl> Read for BufReader<R, P> {
+impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
         // If we don't have any buffered data and we're doing a read matching
         // or exceeding the internal buffer's capacity, bypass the buffer.
@@ -287,14 +290,14 @@ impl<R: Read, P: ReaderPolicy, B: BufImpl> Read for BufReader<R, P> {
     }
 }
 
-impl<R: Read, P: ReaderPolicy, B: BufImpl> BufRead for BufReader<R, P> {
+impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
         // This execution order is important; the policy may want to resize the buffer or move data
         // before reading into it.
         while self.should_read() && self.buf.usable_space() > 0 {
-            self.read_into_buf()?;
+            if self.read_into_buf()? == 0 { break; };
         }
 
         Ok(self.buffer())
@@ -412,31 +415,21 @@ pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
 impl<W: Write> BufWriter<W> {
     /// Wrap `inner` with the default buffer capacity and flush strategy.
     pub fn new(inner: W) -> Self {
-        Self::with_policy(inner, Default::default())
+        Self::with_capacity(DEFAULT_BUF_SIZE, inner)
     }
 
     /// Wrap `inner` with the given buffer capacity and the default flush strategy.
-    pub fn with_capacity(capacity: usize, inner: W) -> Self {
-        Self::with_capacity_and_policy(capacity, inner, Default::default())
+    pub fn with_capacity(cap: usize, inner: W) -> Self {
+        BufWriter {
+            buf: Buffer::with_capacity(cap),
+            inner: AssertSome::new(inner),
+            policy: StdPolicy,
+            panicked: false,
+        }
     }
 }
 
 impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
-    /// Wrap `inner` with the default buffer capacity and given flush strategy
-    pub fn with_policy(inner: W, flush_strat: P) -> Self {
-        Self::with_capacity_and_policy(DEFAULT_BUF_SIZE, inner, flush_strat)
-    }
-
-    /// Wrap `inner` with the given buffer capacity and flush strategy.
-    pub fn with_capacity_and_policy(capacity: usize, inner: W, flush_strat: P) -> Self {
-        BufWriter {
-            inner: AssertSome::new(inner),
-            buf: Buffer::with_capacity(capacity),
-            policy: flush_strat,
-            panicked: false,
-        }
-    }
-
     /// Set a new `WriterPolicy`, returning the transformed type.
     pub fn set_policy<P_: WriterPolicy>(mut self, policy: P_) -> BufWriter<W, P_> {
         BufWriter {
@@ -570,12 +563,12 @@ pub struct LineWriter<W: Write>(BufWriter<W, FlushOnNewline>);
 impl<W: Write> LineWriter<W> {
     /// Wrap `inner` with the default buffer capacity.
     pub fn new(inner: W) -> Self {
-        LineWriter(BufWriter::with_policy(inner, FlushOnNewline))
+        LineWriter(BufWriter::new(inner).set_policy(FlushOnNewline))
     }
 
     /// Wrap `inner` with the given buffer capacity.
     pub fn with_capacity(capacity: usize, inner: W) -> Self {
-        LineWriter(BufWriter::with_capacity_and_policy(capacity, inner, FlushOnNewline))
+        LineWriter(BufWriter::with_capacity(capacity, inner).set_policy(FlushOnNewline))
     }
 
     /// Get a reference to the inner writer.
@@ -688,12 +681,12 @@ impl<W> fmt::Display for IntoInnerError<W> {
 /// A deque-like datastructure for managing bytes.
 ///
 /// Supports interacting via I/O traits like `Read` and `Write`, and direct access.
-pub struct Buffer<B: BufImpl = StdBuf> {
-    buf: B,
+pub struct Buffer {
+    buf: BufImpl,
     zeroed: usize,
 }
 
-impl<B: BufImpl> Buffer<B> {
+impl Buffer {
     /// Create a new buffer with a default capacity.
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_BUF_SIZE)
@@ -705,6 +698,23 @@ impl<B: BufImpl> Buffer<B> {
     pub fn with_capacity(cap: usize) -> Self {
         Buffer {
             buf: BufImpl::with_capacity(cap),
+            zeroed: 0,
+        }
+    }
+
+    /// Allocate a buffer that never needs to move data to make room (consuming from the head
+    /// immediately makes more room at the tail).
+    ///
+    /// See `Buffer::with_capacity_ringbuf()` for more.
+    pub fn new_ringbuf() -> Self {
+        Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE)
+    }
+
+    /// Allocate a buffer with the given capacity that never needs to move data to make room
+    /// (consuming from the head immediately makes more room at the tail).
+    pub fn with_capacity_ringbuf(cap: usize) -> Self {
+        Buffer {
+            buf: BufImpl::with_capacity_ringbuf(cap),
             zeroed: 0,
         }
     }
