@@ -84,6 +84,9 @@ mod benches;
 #[cfg(test)]
 mod std_tests;
 
+#[cfg(all(test, feature = "slice-deque"))]
+mod ringbuf_tests;
+
 #[cfg(feature = "nightly")]
 mod nightly;
 
@@ -376,7 +379,7 @@ impl<T> AssertSome<T> {
     }
 
     fn take(this: &mut Self) -> T {
-        this.0.take().expect("Called AssertSome::take() more than once")
+        this.0.take().expect("Called `AssertSome::take()` more than once")
     }
 
     fn take_self(this: &mut Self) -> Self {
@@ -388,7 +391,8 @@ impl<T> AssertSome<T> {
     }
 }
 
-const ASSERT_DEREF_ERR: &'static str = "Attempt to access value of AssertSome after calling AssertSome::take()";
+const ASSERT_DEREF_ERR: &'static str = "Attempted to access value of AssertSome after calling \
+                                        `AssertSome::take()`";
 
 impl<T> ops::Deref for AssertSome<T> {
     type Target = T;

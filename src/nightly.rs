@@ -5,6 +5,9 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
+
+//! Anything requiring unstable features (specialization, `Read::initializer()`, etc)
+
 use std::fmt;
 use std::io::{Read, Write};
 
@@ -12,7 +15,7 @@ use super::{BufReader, BufWriter, LineWriter};
 
 use policy::{WriterPolicy, MoveStrategy, ReaderPolicy};
 
-impl<R, Rs: ReaderPolicy, Ms: MoveStrategy> fmt::Debug for BufReader<R, Rs, Ms> {
+impl<R, Rs: ReaderPolicy> fmt::Debug for BufReader<R, Rs> {
     default fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufReader")
             .field("reader", &"(no Debug impl)")
