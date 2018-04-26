@@ -92,16 +92,30 @@ impl ReaderPolicy for MinBuffered {
     }
 }
 
+/// Flag for `WriterPolicy` methods to signal whether or not `BufWriter` should flush into the
+/// buffer.
+///
+/// See `do_flush!()` for a shorthand.
+#[derive(Copy, Clone, Debug)]
+pub struct DoFlush(pub bool);
+
+/// Shorthand for invoking `DoFlush(bool)` or `DoFlush(true)` (empty invocation)
+#[macro_export]
+macro_rules! do_flush (
+    ($val:expr) => ( return $crate::policy::DoFlush($val); );
+    () => ( do_flush!(true); )
+);
+
 /// A trait which tells `BufWriter` when to flush.
 pub trait WriterPolicy {
-    /// Return `true` if the buffer should be flushed before reading into it.
+    /// Return `DoFlush(true)` if the buffer should be flushed before reading into it.
     ///
     /// The buffer is provided, as well as `incoming` which is
     /// the size of the buffer that will be written to the `BufWriter`.
     ///
     /// By default, flushes the buffer if the usable space is smaller than the incoming write.
-    fn flush_before(&mut self, buf: &mut Buffer, incoming: usize) -> bool {
-        buf.usable_space() < incoming
+    fn before_write(&mut self, buf: &mut Buffer, incoming: usize) -> DoFlush {
+        DoFlush(buf.usable_space() < incoming)
     }
 
     /// Return `true` if the buffer should be flushed after reading into it.
@@ -109,8 +123,8 @@ pub trait WriterPolicy {
     /// `buf` references the updated buffer after the read.
     ///
     /// Default impl is a no-op.
-    fn flush_after(&mut self, _buf: &Buffer) -> bool {
-        false
+    fn after_write(&mut self, _buf: &Buffer) -> DoFlush {
+        DoFlush(false)
     }
 }
 
@@ -123,8 +137,8 @@ impl WriterPolicy for StdPolicy {}
 pub struct FlushAtLeast(pub usize);
 
 impl WriterPolicy for FlushAtLeast {
-    fn flush_after(&mut self, buf: &Buffer) -> bool {
-        buf.len() > self.0
+    fn after_write(&mut self, buf: &Buffer) -> DoFlush(bool) {
+        DoFlush(buf.len() > self.0)
     }
 }
 
@@ -135,8 +149,8 @@ impl WriterPolicy for FlushAtLeast {
 pub struct FlushOn(pub u8);
 
 impl WriterPolicy for FlushOn {
-    fn flush_after(&mut self, buf: &Buffer) -> bool {
-        ::memchr::memrchr(self.0, buf.buf()).is_some()
+    fn after_write(&mut self, buf: &Buffer) -> DoFlush {
+        DoFlush(::memchr::memrchr(self.0, buf.buf()).is_some())
     }
 }
 
@@ -147,7 +161,7 @@ impl WriterPolicy for FlushOn {
 pub struct FlushOnNewline;
 
 impl WriterPolicy for FlushOnNewline {
-    fn flush_after(&mut self, buf: &Buffer) -> bool {
-        ::memchr::memrchr(b'\n', buf.buf()).is_some()
+    fn after_write(&mut self, buf: &Buffer) -> DoFlush {
+        DoFlush(::memchr::memrchr(b'\n', buf.buf()).is_some())
     }
 }

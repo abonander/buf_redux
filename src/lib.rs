@@ -141,7 +141,7 @@ impl<R> BufReader<R, StdPolicy> {
     ///
     /// Only available on platforms with virtual memory support and with the `slice_deque` feature
     /// enabled. See `Buffer::with_capacity_ringbuf()` for more info.
-    #[cfg(feature = "slice_deque")]
+    #[cfg(feature = "slice-deque")]
     pub fn new_ringbuf(inner: R) -> Self {
         Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE, inner)
     }
@@ -157,7 +157,7 @@ impl<R> BufReader<R, StdPolicy> {
     ///
     /// Only available on platforms with virtual memory support and with the `slice_deque` feature
     /// enabled. See `Buffer::with_capacity_ringbuf()` for more info.
-    #[cfg(feature = "slice_deque")]
+    #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize, inner: R) -> Self {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
@@ -513,7 +513,7 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
 
 impl<W: Write, P: WriterPolicy> Write for BufWriter<W, P> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.policy.flush_before(&mut self.buf, buf.len()) {
+        if self.policy.before_write(&mut self.buf, buf.len()) {
             self.flush_buf()?;
         }
 
@@ -710,12 +710,14 @@ impl Buffer {
     /// immediately makes more room at the tail).
     ///
     /// See `Buffer::with_capacity_ringbuf()` for more.
+    #[cfg(feature = "slice-deque")]
     pub fn new_ringbuf() -> Self {
         Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE)
     }
 
     /// Allocate a buffer with the given capacity that never needs to move data to make room
     /// (consuming from the head immediately makes more room at the tail).
+    #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize) -> Self {
         Buffer {
             buf: BufImpl::with_capacity_ringbuf(cap),
