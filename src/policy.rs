@@ -137,7 +137,7 @@ impl WriterPolicy for StdPolicy {}
 pub struct FlushAtLeast(pub usize);
 
 impl WriterPolicy for FlushAtLeast {
-    fn after_write(&mut self, buf: &Buffer) -> DoFlush(bool) {
+    fn after_write(&mut self, buf: &Buffer) -> DoFlush {
         DoFlush(buf.len() > self.0)
     }
 }

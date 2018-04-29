@@ -19,7 +19,7 @@ use {BufReader, BufWriter};
 
 /// A dummy reader intended at testing short-reads propagation.
 pub struct ShortReader {
-    lengths: Vec<usize>,
+    pub lengths: Vec<usize>,
 }
 
 impl Read for ShortReader {

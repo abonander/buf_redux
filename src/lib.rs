@@ -513,7 +513,7 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
 
 impl<W: Write, P: WriterPolicy> Write for BufWriter<W, P> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.policy.before_write(&mut self.buf, buf.len()) {
+        if self.policy.before_write(&mut self.buf, buf.len()).0 {
             self.flush_buf()?;
         }
 
