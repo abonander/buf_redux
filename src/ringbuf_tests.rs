@@ -43,6 +43,7 @@ macro_rules! assert_capacity {
 fn test_buffer_new() {
     let buf = Buffer::new_ringbuf();
     assert_capacity!(buf, DEFAULT_BUF_SIZE);
+    assert_eq!(buf.capacity(), buf.usable_space());
 }
 
 #[test]
@@ -53,6 +54,7 @@ fn test_buffer_with_cap() {
     // test rounding up to page size
     let buf = Buffer::with_capacity_ringbuf(64);
     assert_capacity!(buf, 4 * 1024);
+    assert_eq!(buf.capacity(), buf.usable_space());
 }
 
 #[test]
@@ -230,6 +232,39 @@ fn test_chars() {
     assert_eq!(it.next().unwrap().unwrap(), 'ß');
     assert_eq!(it.next().unwrap().unwrap(), 'a');
     assert!(it.next().is_none());
+}
+
+/// Test that the ringbuffer wraps as intended
+#[test]
+fn test_mirror_boundary() {
+    // pretends the given bytes have been read
+    struct FakeReader(usize);
+
+    impl Read for FakeReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            Ok(self.0)
+        }
+    }
+
+    let mut buffer = Buffer::new_ringbuf();
+    let cap = buffer.capacity();
+
+    // declaring these as variables for sanity
+    let read_amt = cap; // fill the buffer
+    let test_slice = &[1, 2, 3, 4, 5];
+    let consume_amt = read_amt - 5; // leave one byte
+
+    assert_eq!(buffer.read_from(&mut FakeReader(read_amt)).unwrap(), read_amt);
+    assert_eq!(buffer.usable_space(), cap - read_amt); // should be 0
+    assert_eq!(buffer.read_from(&mut FakeReader(read_amt)).unwrap(), 0); // buffer is full
+    buffer.consume(consume_amt);
+    assert_eq!(buffer.usable_space(), consume_amt);
+    assert_eq!(buffer.copy_from_slice(test_slice), test_slice.len());
+
+    // zero is from the byte we didn't consume
+    assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0, 1, 2, 3, 4, 5]);
+    buffer.clear();
+    assert_eq!(buffer.usable_space(), cap);
 }
 
 // `BufWriter` doesn't utilize a ringbuffer
