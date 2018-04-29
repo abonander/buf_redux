@@ -287,3 +287,28 @@ fn test_line_buffer() {
     writer.write(&[3, b'\n']).unwrap();
     assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n', 2, 3, b'\n']);
 }
+
+#[test]
+fn test_buf_writer_drops_once() {
+    struct CountDrops(usize);
+
+    impl Write for CountDrops {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            unimplemented!()
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            unimplemented!()
+        }
+    }
+
+    impl Drop for CountDrops {
+        fn drop(&mut self) {
+            assert_eq!(self.0, 0);
+            self.0 += 1;
+        }
+    }
+
+    let writer = BufWriter::new(CountDrops(0));
+    let (_, _) = writer.into_inner_with_buffer();
+}

@@ -75,7 +75,7 @@ extern crate test;
 use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::{cmp, error, fmt, io, ops, mem};
+use std::{cmp, error, fmt, io, mem, ptr};
 
 #[cfg(test)]
 mod benches;
@@ -369,49 +369,10 @@ impl<R: Seek, P: ReaderPolicy> Seek for BufReader<R, P> {
     }
 }
 
-/// A type wrapping `Option` which provides more convenient access when the `Some` case is more
-/// common.
-struct AssertSome<T>(Option<T>);
-
-impl<T> AssertSome<T> {
-    fn new(val: T) -> Self {
-        AssertSome(Some(val))
-    }
-
-    fn take(this: &mut Self) -> T {
-        this.0.take().expect("Called `AssertSome::take()` more than once")
-    }
-
-    fn take_self(this: &mut Self) -> Self {
-        AssertSome(this.0.take())
-    }
-
-    fn is_some(this: &Self) -> bool {
-        this.0.is_some()
-    }
-}
-
-const ASSERT_DEREF_ERR: &'static str = "Attempted to access value of AssertSome after calling \
-                                        `AssertSome::take()`";
-
-impl<T> ops::Deref for AssertSome<T> {
-    type Target = T;
-    
-    fn deref(&self) -> &T { 
-        self.0.as_ref().expect(ASSERT_DEREF_ERR)
-    }
-}
-
-impl<T> ops::DerefMut for AssertSome<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.0.as_mut().expect(ASSERT_DEREF_ERR)
-    }
-}
-
 /// A drop-in replacement for `std::io::BufWriter` with more functionality.
 pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
     buf: Buffer,
-    inner: AssertSome<W>,
+    inner: W,
     policy: P,
     panicked: bool,
 }
@@ -426,7 +387,7 @@ impl<W: Write> BufWriter<W> {
     pub fn with_capacity(cap: usize, inner: W) -> Self {
         BufWriter {
             buf: Buffer::with_capacity(cap),
-            inner: AssertSome::new(inner),
+            inner,
             policy: StdPolicy,
             panicked: false,
         }
@@ -435,12 +396,12 @@ impl<W: Write> BufWriter<W> {
 
 impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
     /// Set a new `WriterPolicy`, returning the transformed type.
-    pub fn set_policy<P_: WriterPolicy>(mut self, policy: P_) -> BufWriter<W, P_> {
+    pub fn set_policy<P_: WriterPolicy>(self, policy: P_) -> BufWriter<W, P_> {
+        let panicked = self.panicked;
+        let (inner, buf) = self.into_inner_();
+
         BufWriter {
-            inner: AssertSome::take_self(&mut self.inner),
-            buf: mem::replace(&mut self.buf, Buffer::with_capacity(0)),
-            policy,
-            panicked: self.panicked,
+            inner, buf, policy, panicked
         }
     }
 
@@ -484,7 +445,7 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
     pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
         match self.flush() {
             Err(e) => Err(IntoInnerError(self, e)),
-            Ok(()) => Ok(AssertSome::take(&mut self.inner)),
+            Ok(()) => Ok(self.into_inner_().0),
         }
     }
 
@@ -492,22 +453,30 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
     /// any error encountered during flushing.
     pub fn into_inner_with_err(mut self) -> (W, Option<io::Error>) {
         let err = self.flush().err();
-        (AssertSome::take(&mut self.inner), err)
+        (self.into_inner_().0, err)
     }
 
-    /// Consume `self` and return both the underlying writer and the buffer.
-    pub fn into_inner_with_buffer(mut self) -> (W, Buffer){
-        (
-            AssertSome::take(&mut self.inner),
-            mem::replace(&mut self.buf, Buffer::with_capacity(0))
-        )
+    /// Consume `self` and return both the underlying writer and the buffer
+    pub fn into_inner_with_buffer(self) -> (W, Buffer) {
+        self.into_inner_()
+    }
+
+    // copy the fields out and forget `self` to avoid dropping twice
+    fn into_inner_(self) -> (W, Buffer) {
+        unsafe {
+            // safe because we immediately forget `self`
+            let inner = ptr::read(&self.inner);
+            let buf = ptr::read(&self.buf);
+            mem::forget(self);
+            (inner, buf)
+        }
     }
 
     fn flush_buf(&mut self, amt: usize) -> io::Result<()> {
         if amt == 0 || amt > self.buf.len() { return Ok(()) }
 
         self.panicked = true;
-        let ret = self.buf.write_max(amt, &mut *self.inner);
+        let ret = self.buf.write_max(amt, &mut self.inner);
         self.panicked = false;
         ret
     }
@@ -553,7 +522,7 @@ impl<W: Write + Seek, P: WriterPolicy> Seek for BufWriter<W, P> {
 impl<W: fmt::Debug + Write, P: WriterPolicy + fmt::Debug> fmt::Debug for BufWriter<W, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufWriter")
-            .field("writer", &*self.inner)
+            .field("writer", &self.inner)
             .field("capacity", &self.capacity())
             .field("policy", &self.policy)
             .finish()
@@ -562,7 +531,7 @@ impl<W: fmt::Debug + Write, P: WriterPolicy + fmt::Debug> fmt::Debug for BufWrit
 
 impl<W: Write, P: WriterPolicy> Drop for BufWriter<W, P> {
     fn drop(&mut self) {
-        if AssertSome::is_some(&self.inner) && !self.panicked {
+        if !self.panicked {
             // dtors should not panic, so we ignore a failed flush
             let _r = self.flush();
         }

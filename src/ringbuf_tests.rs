@@ -241,7 +241,7 @@ fn test_mirror_boundary() {
     struct FakeReader(usize);
 
     impl Read for FakeReader {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
             Ok(self.0)
         }
     }
