@@ -252,7 +252,7 @@ fn test_mirror_boundary() {
     // declaring these as variables for sanity
     let read_amt = cap; // fill the buffer
     let test_slice = &[1, 2, 3, 4, 5];
-    let consume_amt = read_amt - 5; // leave one byte
+    let consume_amt = read_amt - 5; // leave several bytes on the head side of the mirror
 
     assert_eq!(buffer.read_from(&mut FakeReader(read_amt)).unwrap(), read_amt);
     assert_eq!(buffer.usable_space(), cap - read_amt); // should be 0
@@ -261,7 +261,7 @@ fn test_mirror_boundary() {
     assert_eq!(buffer.usable_space(), consume_amt);
     assert_eq!(buffer.copy_from_slice(test_slice), test_slice.len());
 
-    // zero is from the byte we didn't consume
+    // zeroes are the bytes we didn't consume
     assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0, 1, 2, 3, 4, 5]);
     buffer.clear();
     assert_eq!(buffer.usable_space(), cap);
