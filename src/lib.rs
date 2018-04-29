@@ -482,7 +482,7 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
     /// Flush the buffer and unwrap, returning the inner writer on success,
     /// or a type wrapping `self` plus the error otherwise.
     pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
-        match self.flush_buf() {
+        match self.flush() {
             Err(e) => Err(IntoInnerError(self, e)),
             Ok(()) => Ok(AssertSome::take(&mut self.inner)),
         }
@@ -491,7 +491,7 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
     /// Flush the buffer and unwrap, returning the inner writer and
     /// any error encountered during flushing.
     pub fn into_inner_with_err(mut self) -> (W, Option<io::Error>) {
-        let err = self.flush_buf().err();
+        let err = self.flush().err();
         (AssertSome::take(&mut self.inner), err)
     }
 
@@ -503,9 +503,11 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
         )
     }
 
-    fn flush_buf(&mut self) -> io::Result<()> {
+    fn flush_buf(&mut self, amt: usize) -> io::Result<()> {
+        if amt == 0 || amt > self.buf.len() { return Ok(()) }
+
         self.panicked = true;
-        let ret = self.buf.write_all(&mut *self.inner);
+        let ret = self.buf.write_max(amt, &mut *self.inner);
         self.panicked = false;
         ret
     }
@@ -513,22 +515,28 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
 
 impl<W: Write, P: WriterPolicy> Write for BufWriter<W, P> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.policy.before_write(&mut self.buf, buf.len()).0 {
-            self.flush_buf()?;
-        }
+        let flush_amt = self.policy.before_write(&mut self.buf, buf.len()).0;
+        self.flush_buf(flush_amt)?;
 
-        if buf.len() >= self.buf.capacity() {
+        let written = if self.buf.is_empty() && buf.len() >= self.buf.capacity() {
             self.panicked = true;
-            let ret = self.inner.write(buf);
+            let result = self.inner.write(buf);
             self.panicked = false;
-            ret
+            result?
         } else {
-            Ok(self.buf.copy_from_slice(buf))
-        }
+            self.buf.copy_from_slice(buf)
+        };
+
+        let flush_amt = self.policy.after_write(&self.buf).0;
+
+        let _ = self.flush_buf(flush_amt);
+
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.flush_buf()?;
+        let flush_amt = self.buf.len();
+        self.flush_buf(flush_amt)?;
         self.inner.flush()
     }
 }
@@ -538,7 +546,7 @@ impl<W: Write + Seek, P: WriterPolicy> Seek for BufWriter<W, P> {
     ///
     /// Seeking always writes out the internal buffer before seeking.
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.flush_buf().and_then(|_| self.get_mut().seek(pos))
+        self.flush().and_then(|_| self.get_mut().seek(pos))
     }
 }
 
@@ -556,7 +564,7 @@ impl<W: Write, P: WriterPolicy> Drop for BufWriter<W, P> {
     fn drop(&mut self) {
         if AssertSome::is_some(&self.inner) && !self.panicked {
             // dtors should not panic, so we ignore a failed flush
-            let _r = self.flush_buf();
+            let _r = self.flush();
         }
     }
 }
@@ -864,6 +872,30 @@ impl Buffer {
         let written = wrt.write(self.buf())?;
         self.consume(written);
         Ok(written)
+    }
+
+    /// Write, at most, the given number of bytes from this buffer to `wrt`, continuing
+    /// to write and ignoring interrupts, until the number is reached or the buffer is empty.
+    ///
+    /// ### Panics
+    /// If the count returned by `wrt.write()` would cause the head cursor to overflow or pass
+    /// the tail cursor if added to it.
+    pub fn write_max<W: Write + ?Sized>(&mut self, mut max: usize, wrt: &mut W) -> io::Result<()> {
+        while self.len() > 0 && max > 0 {
+            let len = cmp::min(self.len(), max);
+            let n = match wrt.write(&self.buf()[..len]) {
+                Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero,
+                                                   "Buffer::write_all() got zero-sized write")),
+                Ok(n) => n,
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+
+            self.consume(n);
+            max = max.saturating_sub(n);
+        }
+
+        Ok(())
     }
 
     /// Write all bytes in this buffer, ignoring interrupts. Continues writing until the buffer is

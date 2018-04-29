@@ -18,7 +18,7 @@ use super::Buffer;
 #[derive(Copy, Clone, Debug)]
 pub struct DoRead(pub bool);
 
-/// Shorthand for invoking `DoRead(bool)` or `DoRead(true)` (empty invocation)
+/// Shorthand for `return DoRead(bool)` or `return DoRead(true)` (empty invocation)
 #[macro_export]
 macro_rules! do_read (
     ($val:expr) => ( return $crate::policy::DoRead($val); );
@@ -92,30 +92,32 @@ impl ReaderPolicy for MinBuffered {
     }
 }
 
-/// Flag for `WriterPolicy` methods to signal whether or not `BufWriter` should flush into the
-/// buffer.
+/// Flag for `WriterPolicy` methods to tell `BufWriter` how many bytes to flush to the
+/// underlying reader.
 ///
-/// See `do_flush!()` for a shorthand.
+/// See `flush_amt!()` for a shorthand.
 #[derive(Copy, Clone, Debug)]
-pub struct DoFlush(pub bool);
+pub struct FlushAmt(pub usize);
 
-/// Shorthand for invoking `DoFlush(bool)` or `DoFlush(true)` (empty invocation)
+/// Shorthand for `return FlushAmt(n)` or `return FlushAmt(0)` (empty invocation)
 #[macro_export]
-macro_rules! do_flush (
-    ($val:expr) => ( return $crate::policy::DoFlush($val); );
-    () => ( do_flush!(true); )
+macro_rules! flush_amt (
+    ($n:expr) => ( return $crate::policy::FlushAmt($n); );
+    () => ( flush_amt!(0); )
 );
 
 /// A trait which tells `BufWriter` when to flush.
 pub trait WriterPolicy {
-    /// Return `DoFlush(true)` if the buffer should be flushed before reading into it.
+    /// Return `FlushAmt(n > 0)` if the buffer should be flushed before reading into it.
+    /// If the returned amount is 0 or greater than the amount of buffered data, no flush is
+    /// performed.
     ///
     /// The buffer is provided, as well as `incoming` which is
     /// the size of the buffer that will be written to the `BufWriter`.
     ///
     /// By default, flushes the buffer if the usable space is smaller than the incoming write.
-    fn before_write(&mut self, buf: &mut Buffer, incoming: usize) -> DoFlush {
-        DoFlush(buf.usable_space() < incoming)
+    fn before_write(&mut self, buf: &mut Buffer, incoming: usize) -> FlushAmt {
+        FlushAmt(if incoming > buf.usable_space() { buf.len() } else { 0 })
     }
 
     /// Return `true` if the buffer should be flushed after reading into it.
@@ -123,8 +125,8 @@ pub trait WriterPolicy {
     /// `buf` references the updated buffer after the read.
     ///
     /// Default impl is a no-op.
-    fn after_write(&mut self, _buf: &Buffer) -> DoFlush {
-        DoFlush(false)
+    fn after_write(&mut self, _buf: &Buffer) -> FlushAmt {
+        FlushAmt(0)
     }
 }
 
@@ -137,8 +139,8 @@ impl WriterPolicy for StdPolicy {}
 pub struct FlushAtLeast(pub usize);
 
 impl WriterPolicy for FlushAtLeast {
-    fn after_write(&mut self, buf: &Buffer) -> DoFlush {
-        DoFlush(buf.len() > self.0)
+    fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
+        FlushAmt(::std::cmp::max(buf.len(), self.0))
     }
 }
 
@@ -149,8 +151,9 @@ impl WriterPolicy for FlushAtLeast {
 pub struct FlushOn(pub u8);
 
 impl WriterPolicy for FlushOn {
-    fn after_write(&mut self, buf: &Buffer) -> DoFlush {
-        DoFlush(::memchr::memrchr(self.0, buf.buf()).is_some())
+    fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
+        // include the delimiter in the flush
+        FlushAmt(::memchr::memrchr(self.0, buf.buf()).map_or(0, |n| n + 1))
     }
 }
 
@@ -161,7 +164,7 @@ impl WriterPolicy for FlushOn {
 pub struct FlushOnNewline;
 
 impl WriterPolicy for FlushOnNewline {
-    fn after_write(&mut self, buf: &Buffer) -> DoFlush {
-        DoFlush(::memchr::memrchr(b'\n', buf.buf()).is_some())
+    fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
+        FlushAmt(::memchr::memrchr(b'\n', buf.buf()).map_or(0, |n| n + 1))
     }
 }

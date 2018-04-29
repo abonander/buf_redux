@@ -15,7 +15,7 @@
 
 use std::io::prelude::*;
 use std::io::{self, SeekFrom};
-use {BufReader, BufWriter};
+use {BufReader, BufWriter, LineWriter};
 
 /// A dummy reader intended at testing short-reads propagation.
 pub struct ShortReader {
@@ -269,4 +269,21 @@ fn test_buffered_writer_seek() {
     assert_eq!(w.seek(SeekFrom::Start(2)).ok(), Some(2));
     w.write_all(&[8, 9]).unwrap();
     assert_eq!(&w.into_inner().unwrap().into_inner()[..], &[0, 1, 8, 9, 4, 5, 6, 7]);
+}
+
+#[test]
+fn test_line_buffer() {
+    let mut writer = LineWriter::new(Vec::new());
+    writer.write(&[0]).unwrap();
+    assert_eq!(*writer.get_ref(), []);
+    writer.write(&[1]).unwrap();
+    assert_eq!(*writer.get_ref(), []);
+    writer.flush().unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1]);
+    writer.write(&[0, b'\n', 1, b'\n', 2]).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n']);
+    writer.flush().unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n', 2]);
+    writer.write(&[3, b'\n']).unwrap();
+    assert_eq!(*writer.get_ref(), [0, 1, 0, b'\n', 1, b'\n', 2, 3, b'\n']);
 }
