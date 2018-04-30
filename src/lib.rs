@@ -378,18 +378,34 @@ pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
 }
 
 impl<W: Write> BufWriter<W> {
-    /// Wrap `inner` with the default buffer capacity and flush strategy.
+    /// Wrap `inner` with the default buffer capacity and `WriterPolicy`.
     pub fn new(inner: W) -> Self {
-        Self::with_capacity(DEFAULT_BUF_SIZE, inner)
+        Self::with_buffer(Buffer::new(), inner)
     }
 
-    /// Wrap `inner` with the given buffer capacity and the default flush strategy.
+    /// Wrap `inner` with the given buffer capacity and the default `WriterPolicy`.
     pub fn with_capacity(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity(cap), inner)
+    }
+
+    /// Wrap `inner` with the default buffer capacity and `WriterPolicy`.
+    pub fn new_ringbuf(inner: W) -> Self {
+        Self::with_buffer(Buffer::new_ringbuf(), inner)
+    }
+
+    /// Wrap `inner` with the given buffer capacity and the default `WriterPolicy`.
+    pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
+    }
+
+    /// Wrap `inner` with an existing buffer and the default `WriterPolicy`.
+    ///
+    /// ### Note
+    /// Does **not** clear the buffer first! If there is data already in the buffer
+    /// it will be written out on the next flush!
+    pub fn with_buffer(buf: Buffer, inner: W) -> BufWriter<W> {
         BufWriter {
-            buf: Buffer::with_capacity(cap),
-            inner,
-            policy: StdPolicy,
-            panicked: false,
+            buf, inner, policy: StdPolicy, panicked: false,
         }
     }
 }
@@ -544,12 +560,31 @@ pub struct LineWriter<W: Write>(BufWriter<W, FlushOnNewline>);
 impl<W: Write> LineWriter<W> {
     /// Wrap `inner` with the default buffer capacity.
     pub fn new(inner: W) -> Self {
-        LineWriter(BufWriter::new(inner).set_policy(FlushOnNewline))
+        Self::with_buffer(Buffer::new(), inner)
     }
 
     /// Wrap `inner` with the given buffer capacity.
-    pub fn with_capacity(capacity: usize, inner: W) -> Self {
-        LineWriter(BufWriter::with_capacity(capacity, inner).set_policy(FlushOnNewline))
+    pub fn with_capacity(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity(cap), inner)
+    }
+
+    /// Wrap `inner` with the default buffer capacity.
+    pub fn new_ringbuf(inner: W) -> Self {
+        Self::with_buffer(Buffer::new_ringbuf(), inner)
+    }
+
+    /// Wrap `inner` with the given buffer capacity.
+    pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
+        Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
+    }
+
+    /// Wrap `inner` with an existing buffer.
+    ///
+    /// ### Note
+    /// Does **not** clear the buffer first! If there is data already in the buffer
+    /// it will be written out on the next flush!
+    pub fn with_buffer(buf: Buffer, inner: W) -> LineWriter<W> {
+        LineWriter(BufWriter::with_buffer(buf, inner).set_policy(FlushOnNewline))
     }
 
     /// Get a reference to the inner writer.
@@ -700,6 +735,11 @@ impl Buffer {
             buf: BufImpl::with_capacity_ringbuf(cap),
             zeroed: 0,
         }
+    }
+
+    /// Return `true` if this is a ringbuffer.
+    pub fn is_ringbuf(&self) -> bool {
+        self.buf.is_ringbuf()
     }
 
     /// Return the number of bytes currently in this buffer.

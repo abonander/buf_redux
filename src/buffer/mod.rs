@@ -26,64 +26,40 @@ pub enum BufImpl {
 macro_rules! forward_method {
     (pub fn $fnname:ident(&self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub fn $fnname(&self $($args)*) $(-> $ret)* {
-            #[cfg(feature = "slice-deque")]
-            {
-                if let BufImpl::Ringbuf(ref buf) = *self {
-                    return buf.$fnname($($passargs)*);
-                }
-            }
-
             match self {
                 BufImpl::Std(ref buf) => buf.$fnname($($passargs)*),
-                _ => unreachable!(),
+                #[cfg(feature = "slice-deque")]
+                BufImpl::Ringbuf(ref buf) => buf.$fnname($($passargs)*),
             }
         }
     };
 
     (pub fn $fnname:ident(&mut self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub fn $fnname(&mut self $($args)*) $(-> $ret)* {
-            #[cfg(feature = "slice-deque")]
-            {
-                if let BufImpl::Ringbuf(ref mut buf) = *self {
-                    return buf.$fnname($($passargs)*);
-                }
-            }
-
             match self {
                 BufImpl::Std(ref mut buf) => buf.$fnname($($passargs)*),
-                _ => unreachable!(),
+                #[cfg(feature = "slice-deque")]
+                BufImpl::Ringbuf(ref mut buf) => buf.$fnname($($passargs)*),
             }
         }
     };
 
     (pub unsafe fn $fnname:ident(&self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub unsafe fn $fnname(&self $($args)*) $(-> $ret)* {
-            #[cfg(feature = "slice-deque")]
-            {
-                if let BufImpl::Ringbuf(ref buf) = *self {
-                    return buf.$fnname($($passargs)*);
-                }
-            }
-
             match self {
                 BufImpl::Std(ref buf) => buf.$fnname($($passargs)*),
-                _ => unreachable!(),
+                #[cfg(feature = "slice-deque")]
+                BufImpl::Ringbuf(ref buf) => buf.$fnname($($passargs)*),
             }
         }
     };
 
     (pub unsafe fn $fnname:ident(&mut self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub unsafe fn $fnname(&mut self $($args)*) $(-> $ret)* {
-            #[cfg(feature = "slice-deque")]
-            {
-                if let BufImpl::Ringbuf(ref mut buf) = *self {
-                    return buf.$fnname($($passargs)*);
-                }
-            }
-
             match self {
                 BufImpl::Std(ref mut buf) => buf.$fnname($($passargs)*),
-                _ => unreachable!(),
+                #[cfg(feature = "slice-deque")]
+                BufImpl::Ringbuf(ref mut buf) => buf.$fnname($($passargs)*),
             }
         }
     };
@@ -105,6 +81,14 @@ impl BufImpl {
     #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize) -> Self {
         BufImpl::Ringbuf(SliceDequeBuf::with_capacity(cap))
+    }
+
+    pub fn is_ringbuf(&self) -> bool {
+        match *self {
+            #[cfg(feature = "slice-deque")]
+            BufImpl::Ringbuf(_) => true,
+            _ => false,
+        }
     }
 
     forward_methods! {

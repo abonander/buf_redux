@@ -293,7 +293,7 @@ fn test_buf_writer_drops_once() {
     struct CountDrops(usize);
 
     impl Write for CountDrops {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
             unimplemented!()
         }
 
