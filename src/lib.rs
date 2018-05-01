@@ -51,15 +51,23 @@
 //! * Get the inner writer and trimmed buffer with the unflushed data.
 //!
 //! ### More Sensible and Customizable Buffering Behavior
-//! * Tune the behavior of the buffer to your specific use-case using the types in the [`strategy`
-//! module](strategy/index.html):
-//!     * `BufReader` performs reads as dictated by the [`ReadStrategy` trait](strategy/trait.ReadStrategy.html).
-//!     * `BufReader` moves bytes down to the beginning of the buffer, to make more room at the end, when deemed appropriate by the
-//! [`MoveStrategy` trait](strategy/trait.MoveStrategy.html).
-//!     * `BufWriter` flushes bytes to the inner writer when full, or when deemed appropriate by
-//!         the [`FlushStrategy` trait](strategy/trait.FlushStrategy.html).
+//! * Tune the behavior of the buffer to your specific use-case using the types in the
+//! [`policy` module]:
+//!     * Refine `BufReader`'s buffering behavior by implementing the [`ReaderPolicy` trait] or use
+//!       an existing implementation like [`MinBuffered`] to ensure the buffer always contains
+//!       a minimum amount of data (until the underlying reader is empty).
+//!     * Refine `BufWriter`'s buffering behavior by implementing the [`WriterPolicy` trait]
+//!       or use an existing implementation like [`FlushOn`] to flush when a particular byte
+//!       appears in the buffer (used to implement [`LineWriter`]).
 //! * `Buffer` uses exact allocation instead of leaving it up to `Vec`, which allocates sizes in powers of two.
 //!     * Vec's behavior is more efficient for frequent growth, but much too greedy for infrequent growth and custom capacities.
+//!
+//! [`policy` module]: policy
+//! [`ReaderPolicy` trait]: policy::ReaderPolicy
+//! [`MinBuffered`]: policy::MinBuffered
+//! [`WriterPolicy`]: policy::WriterPolicy
+//! [`FlushOn`]: policy::FlushOn
+//! [`LineWriter`]: LineWriter
 #![warn(missing_docs)]
 #![cfg_attr(feature = "nightly", feature(alloc, read_initializer, specialization))]
 #![cfg_attr(test, feature(test))]
@@ -110,6 +118,74 @@ const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 ///
 /// Original method names/signatures and implemented traits are left untouched,
 /// making replacement as simple as swapping the import of the type.
+///
+/// By default this type implements the behavior of its `std` counterpart: it only reads into
+/// the buffer when it is empty.
+///
+/// To change this type's buffering behavior, change the policy with [`.set_policy()`] using a type
+/// from the [`policy` module] or your own implementation of [`ReaderPolicy`].
+///
+/// [`.set_policy()`]: BufReader::set_policy
+/// [`policy` module]: policy
+/// [`ReaderPolicy`]: policy::ReaderPolicy
+/// 
+/// ### Making Room
+/// Both `std::io::BufReader` and this `BufReader`, by default, use `Box<[u8]>` as their buffer
+/// types; when `BufRead::fill_buf()` is first called (directly or internally by `Read::read()`),
+/// the entire buffer is provided to `Read::read()` and the amount of bytes
+/// read is saved, then a slice of the buffer in the range `0 .. bytes_read` is returned.
+///
+/// When bytes are consumed from the buffer it leaves empty space at the head, such that
+/// `.fill_buf()` now returns a slice of the buffer in the range `bytes_consumed .. bytes_read`.
+///
+/// The `std::io::BufReader` type only reads into its buffer when it is empty, so it never has
+/// to find empty space to read into as it can just start at the beginning of the buffer again once
+/// all bytes have been consumed.
+///
+/// However, because this `BufReader` can read into its buffer on-demand, it can run out of room in
+/// the buffer to read data into even though there is technically free space, because this free
+/// space is at the head of the buffer where reading into it would cause the data in the buffer
+/// to become non-contiguous. This isn't technically a problem as the buffer could operate like
+/// `VecDeque` in `std` and return both slices at once, but the `.fill_buf()` interface only allows
+/// one slice to be returned at a time so the older data would need to be completely consumed before
+/// the newer data can be returned; this would not fit all use-cases.
+///
+/// The obvious solution, then, is to move the existing data down to the beginning of the buffer
+/// when there is no more room at the end so that more reads into the buffer can be issued. This
+/// works, and may suit some use-cases where the amount of data left is small and thus copying
+/// it would be inexpensive, but it is non-optimal. However, this option is provided
+/// as the [`.make_room()`] method, and is utilized by
+/// [`policy::MinBuffered`](policy::MinBuffered) when necessary.
+///
+/// ### Using a Ringbuffer / `slice-deque` Feature
+/// Instead of moving data, however, it is also possible to use virtual-memory tricks to
+/// allocate a ringbuffer that loops around on itself in memory and thus is always contiguous, 
+/// as described in [the Wikipedia article on Ringbuffers][ringbuf-wikipedia].
+/// 
+/// This is the exact trick used by [the `slice-deque` crate](https://crates.io/crates/slice-deque),
+/// which this crate now provides as an optional feature `slice-deque` exposed via the
+/// [`new_ringbuf()`] and [`with_capacity_ringbuf()`] constructors. When constructed using one
+/// of these functions, [`.make_room()`] is turned into a no-op as consuming bytes from the head
+/// of the buffer simultaneously makes room at the tail. However, this has some caveats:
+/// 
+/// * It is only available on target platforms with virtual memory support, namely Windows and
+/// Unix-derivative platforms like Linux, OS X, BSD variants, etc.
+/// 
+/// * The default capacity varies based on platform, and custom capacities are rounded up to a 
+/// multiple of their minimum size, typically the page size of the platform.
+/// Windows' minimum size is comparably quite large (**64 KiB**) due to some legacy reasons,
+/// so this may be less optimal than the default capacity for a normal buffer (8 KiB) for some
+/// use-cases.
+/// 
+/// * Due to the nature of the virtual-memory trick, the virtual address space the buffer
+/// allocates will be double its capacity. This means that your program will appear to use more
+/// memory than it would if it was using a normal buffer of the same capacity. The physical memory
+/// usage will be the same in both cases, however.
+/// 
+/// [ringbuf-wikipedia]: https://en.wikipedia.org/wiki/Circular_buffer#Optimization
+/// [`.make_room()`]: BufReader::make_room
+/// [`new_ringbuf()`]: BufReader::new_ringbuf
+/// [`with_capacity_ringbuf()`]: BufReader::with_capacity_ringbuf
 pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
     // First field for null pointer optimization.
     buf: Buffer,
@@ -119,13 +195,13 @@ pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
 
 impl<R> BufReader<R, StdPolicy> {
     /// Create a new `BufReader` wrapping `inner`, with a buffer of a
-    /// default capacity and the default `ReadPolicy`.
+    /// default capacity and the default [`ReaderPolicy`](policy::ReaderPolicy).
     pub fn new(inner: R) -> Self {
         Self::with_capacity(DEFAULT_BUF_SIZE, inner)
     }
 
     /// Create a new `BufReader` wrapping `inner` with a capacity
-    /// of *at least* `cap` bytes and the default `ReadPolicy`.
+    /// of *at least* `cap` bytes and the default [`ReaderPolicy`](policy::ReaderPolicy).
     ///
     /// The actual capacity of the buffer may vary based on
     /// implementation details of the buffer's allocator.
@@ -133,40 +209,43 @@ impl<R> BufReader<R, StdPolicy> {
         Self::with_buffer(Buffer::with_capacity(cap), inner)
     }
 
-    /// Allocate a buffer that never needs to move data to make room (consuming from the head
-    /// immediately makes more room at the tail).
+    /// Wrap `inner` with a ringbuffer with the default capacity.
     ///
-    /// This is useful in conjunction with `policy::MinBuffered` to ensure there is always room
-    /// to read more data if necessary, without expensive copying operations.
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// `MinBuffered` to ensure there is always room to read more data if necessary, without
+    /// expensive copying operations.
     ///
-    /// Only available on platforms with virtual memory support and with the `slice_deque` feature
-    /// enabled. See `Buffer::with_capacity_ringbuf()` for more info.
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The default capacity will differ between Windows and Unix-derivative targets.
+    /// See [`Buffer::new_ringbuf()`](struct.Buffer.html#method.new_ringbuf) for more info.
     #[cfg(feature = "slice-deque")]
     pub fn new_ringbuf(inner: R) -> Self {
         Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE, inner)
     }
 
-    /// Allocate a buffer with the given capacity that never needs to move data to make room
-    /// (consuming from the head immediately makes more room at the tail).
+    /// Wrap `inner` with a ringbuffer with *at least* the given capacity and the default
+    /// `ReaderPolicy`.
     ///
-    /// This is useful in conjunction with `policy::MinBuffered` to ensure there is always room
-    /// to read more data if necessary, without expensive copying operations.
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// `MinBuffered` to ensure there is always room to read more data if necessary, without
+    /// expensive copying operations.
     ///
-    /// The capacity will be rounded up to the minimum size for the current platform (the next
-    /// multiple of the page size, usually).
-    ///
-    /// Only available on platforms with virtual memory support and with the `slice_deque` feature
-    /// enabled. See `Buffer::with_capacity_ringbuf()` for more info.
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The capacity will be rounded up to the minimum size for the target platform.
+    /// See [`Buffer::with_capacity_ringbuf()`](struct.Buffer.html#method.with_capacity_ringbuf)
+    /// for more info.
     #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize, inner: R) -> Self {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
 
-    /// Re-use an existing buffer with a new reader.
+    /// Wrap `inner` with an existing `Buffer` instance and the default `ReaderPolicy`.
     ///
     /// ### Note
     /// Does **not** clear the buffer first! If there is data already in the buffer
-    /// then it will be returned in `read()` and `fill_buf()`.
+    /// then it will be returned in `read()` and `fill_buf()` ahead of any data from `inner`.
     pub fn with_buffer(buf: Buffer, inner: R) -> Self {
         BufReader {
             buf, inner, policy: StdPolicy
@@ -370,6 +449,19 @@ impl<R: Seek, P: ReaderPolicy> Seek for BufReader<R, P> {
 }
 
 /// A drop-in replacement for `std::io::BufWriter` with more functionality.
+///
+/// Original method names/signatures and implemented traits are left untouched,
+/// making replacement as simple as swapping the import of the type.
+///
+/// By default this type implements the behavior of its `std` counterpart: it only flushes
+/// the buffer if an incoming write is larger than the remaining space.
+///
+/// To change this type's buffering behavior, change the policy with [`.set_policy()`] using a type
+/// from the [`policy` module] or your own implentation of [`WriterPolicy`].
+///
+/// [`.set_policy()`]: BufWriter::set_policy
+/// [`policy` module]: policy
+/// [`WriterPolicy`]: policy::WriterPolicy
 pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
     buf: Buffer,
     inner: W,
@@ -378,27 +470,48 @@ pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
 }
 
 impl<W: Write> BufWriter<W> {
-    /// Wrap `inner` with the default buffer capacity and `WriterPolicy`.
+    /// Wrap `inner` with the default buffer capacity and [`WriterPolicy`](policy::WriterPolicy).
     pub fn new(inner: W) -> Self {
         Self::with_buffer(Buffer::new(), inner)
     }
 
-    /// Wrap `inner` with the given buffer capacity and the default `WriterPolicy`.
+    /// Wrap `inner` with the given buffer capacity and the default
+    /// [`WriterPolicy`](policy::WriterPolicy).
     pub fn with_capacity(cap: usize, inner: W) -> Self {
         Self::with_buffer(Buffer::with_capacity(cap), inner)
     }
 
-    /// Wrap `inner` with the default buffer capacity and `WriterPolicy`.
+    /// Wrap `inner` with the default buffer capacity and [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// `FlushOnNewline` to ensure there is always room to write more data if necessary, without
+    /// expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The default capacity will differ between Windows and Unix-derivative targets.
+    /// See [`Buffer::new_ringbuf()`](Buffer::new_ringbuf) for more info.
     pub fn new_ringbuf(inner: W) -> Self {
         Self::with_buffer(Buffer::new_ringbuf(), inner)
     }
 
-    /// Wrap `inner` with the given buffer capacity and the default `WriterPolicy`.
+    /// Wrap `inner` with a ringbuffer with *at least* `cap` capacity
+    /// and the default [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// A ringbuffer never has to move data to make room; consuming bytes from the head
+    /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
+    /// `FlushOnNewline` to ensure there is always room to write more data if necessary, without
+    /// expensive copying operations.
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The capacity will be rounded up to the minimum size for the target platform.
+    /// See [`Buffer::with_capacity_ringbuf()`](Buffer::with_capacity_ringbuf) for more info.
     pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
 
-    /// Wrap `inner` with an existing buffer and the default `WriterPolicy`.
+    /// Wrap `inner` with an existing [`Buffer`](Buffer) instance and the default
+    /// [`WriterPolicy`](policy::WriterPolicy).
     ///
     /// ### Note
     /// Does **not** clear the buffer first! If there is data already in the buffer
@@ -411,7 +524,7 @@ impl<W: Write> BufWriter<W> {
 }
 
 impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
-    /// Set a new `WriterPolicy`, returning the transformed type.
+    /// Set a new [`WriterPolicy`](policy::WriterPolicy), returning the transformed type.
     pub fn set_policy<P_: WriterPolicy>(self, policy: P_) -> BufWriter<W, P_> {
         let panicked = self.panicked;
         let (inner, buf) = self.into_inner_();
@@ -421,7 +534,7 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
         }
     }
 
-    /// Mutate the current `WriterPolicy`.
+    /// Mutate the current [`WriterPolicy`](policy::WriterPolicy).
     pub fn policy_mut(&mut self) -> &mut P {
         &mut self.policy
     }
@@ -555,6 +668,10 @@ impl<W: Write, P: WriterPolicy> Drop for BufWriter<W, P> {
 }
 
 /// A drop-in replacement for `std::io::LineWriter` with more functionality.
+///
+/// This is, in fact, only a thin wrapper around
+/// [`BufWriter`](BufWriter)`<W, `[`policy::FlushOnNewline`](policy::FlushOnNewline)`>`, which
+/// demonstrates the power of custom [`WriterPolicy`](policy::WriterPolicy) implementations.
 pub struct LineWriter<W: Write>(BufWriter<W, FlushOnNewline>);
 
 impl<W: Write> LineWriter<W> {
@@ -568,17 +685,17 @@ impl<W: Write> LineWriter<W> {
         Self::with_buffer(Buffer::with_capacity(cap), inner)
     }
 
-    /// Wrap `inner` with the default buffer capacity.
+    /// Wrap `inner` with the default buffer capacity using a ringbuffer.
     pub fn new_ringbuf(inner: W) -> Self {
         Self::with_buffer(Buffer::new_ringbuf(), inner)
     }
 
-    /// Wrap `inner` with the given buffer capacity.
+    /// Wrap `inner` with the given buffer capacity using a ringbuffer.
     pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
 
-    /// Wrap `inner` with an existing buffer.
+    /// Wrap `inner` with an existing `Buffer` instance.
     ///
     /// ### Note
     /// Does **not** clear the buffer first! If there is data already in the buffer
@@ -718,17 +835,43 @@ impl Buffer {
         }
     }
 
-    /// Allocate a buffer that never needs to move data to make room (consuming from the head
-    /// immediately makes more room at the tail).
+    /// Allocate a buffer with a default capacity that never needs to move data to make room
+    /// (consuming from the head simultaneously makes more room at the tail).
     ///
-    /// See `Buffer::with_capacity_ringbuf()` for more.
+    /// The default capacity varies based on the target platform:
+    ///
+    /// * Unix-derivative platforms; Linux, OS X, BSDs, etc: **8KiB** (the default buffer size for
+    /// `std::io` buffered types)
+    /// * Windows: **64KiB** because of legacy reasons, of course (see below)
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The current platforms that are supported/tested are listed
+    /// [in the README for the `slice-deque` crate][slice-deque].
+    ///
+    /// [slice-deque]: https://github.com/gnzlbg/slice_deque#platform-support
     #[cfg(feature = "slice-deque")]
     pub fn new_ringbuf() -> Self {
         Self::with_capacity_ringbuf(DEFAULT_BUF_SIZE)
     }
 
-    /// Allocate a buffer with the given capacity that never needs to move data to make room
-    /// (consuming from the head immediately makes more room at the tail).
+    /// Allocate a buffer with *at least* the given capacity that never needs to move data to
+    /// make room (consuming from the head simultaneously makes more room at the tail).
+    ///
+    /// The capacity will be rounded up to the minimum size for the current target:
+    ///
+    /// * Unix-derivative platforms; Linux, OS X, BSDs, etc: the next multiple of the page size
+    /// (typically 4KiB but can vary based on system configuration)
+    /// * Windows: the next muliple of **64KiB**; see [this Microsoft dev blog post][Win-why-64k]
+    /// for why it's 64KiB and not the page size (TL;DR: Alpha AXP needs it and it's applied on
+    /// all targets for consistency/portability)
+    ///
+    /// [Win-why-64k]: https://blogs.msdn.microsoft.com/oldnewthing/20031008-00/?p=42223
+    ///
+    /// Only available on platforms with virtual memory support and with the `slice-deque` feature
+    /// enabled. The current platforms that are supported/tested are listed
+    /// [in the README for the `slice-deque` crate][slice-deque].
+    ///
+    /// [slice-deque]: https://github.com/gnzlbg/slice_deque#platform-support
     #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize) -> Self {
         Buffer {
@@ -787,7 +930,8 @@ impl Buffer {
     /// Ensure space for at least `additional` more bytes in the buffer.
     ///
     /// This is a no-op if `usable_space() >= additional`. Note that this will reallocate
-    /// even if there is enough free space at the head of the buffer for `additional` bytes.
+    /// even if there is enough free space at the head of the buffer for `additional` bytes,
+    /// because that free space is not at the tail where it can be read into.
     /// If you prefer copying data down in the buffer before attempting to reallocate you may wish
     /// to call `.make_room()` first.
     ///
@@ -817,7 +961,7 @@ impl Buffer {
     /// Uses `Read::initializer()` to initialize the buffer if the `nightly`
     /// feature is enabled, otherwise the buffer is zeroed if it has never been written.
     ///
-    /// ###Panics
+    /// ### Panics
     /// If the returned count from `rdr.read()` overflows the tail cursor of this buffer.
     pub fn read_from<R: Read + ?Sized>(&mut self, rdr: &mut R) -> io::Result<usize> {
         if self.usable_space() == 0 {
@@ -884,7 +1028,7 @@ impl Buffer {
     }
 
     /// Write, at most, the given number of bytes from this buffer to `wrt`, continuing
-    /// to write and ignoring interrupts, until the number is reached or the buffer is empty.
+    /// to write and ignoring interrupts until the number is reached or the buffer is empty.
     ///
     /// ### Panics
     /// If the count returned by `wrt.write()` would cause the head cursor to overflow or pass
@@ -907,8 +1051,8 @@ impl Buffer {
         Ok(())
     }
 
-    /// Write all bytes in this buffer, ignoring interrupts. Continues writing until the buffer is
-    /// empty or an error is returned.
+    /// Write all bytes in this buffer to `wrt`, ignoring interrupts. Continues writing until
+    /// the buffer is empty or an error is returned.
     ///
     /// ### Panics
     /// If `self.write_to(wrt)` panics.
@@ -979,8 +1123,8 @@ impl fmt::Debug for Buffer {
     }
 }
 
-/// A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before reading from
-/// `inner` directly. Frees the buffer when it has been emptied. 
+/// A `Read` adapter for a consumed `BufReader` which will empty bytes from the buffer before
+/// reading from `R` directly. Frees the buffer when it has been emptied.
 pub struct Unbuffer<R> {
     inner: R,
     buf: Option<Buffer>,
@@ -1035,7 +1179,8 @@ impl<R: fmt::Debug> fmt::Debug for Unbuffer<R> {
 
 /// Copy data between a `BufRead` and a `Write` without an intermediate buffer.
 ///
-/// Retries on interrupts.
+/// Retries on interrupts. Returns the total bytes copied or the first error;
+/// even if an error is returned some bytes may still have been copied.
 pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
     let mut total_copied = 0;
 
