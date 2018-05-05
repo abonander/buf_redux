@@ -139,8 +139,39 @@ impl WriterPolicy for StdPolicy {}
 pub struct FlushAtLeast(pub usize);
 
 impl WriterPolicy for FlushAtLeast {
+    fn before_write(&mut self, buf: &mut Buffer, incoming: usize) -> FlushAmt {
+        ensure_capacity(buf, self.0);
+        FlushAmt(if incoming > buf.usable_space() { buf.len() } else { 0 })
+    }
+
     fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
         FlushAmt(::std::cmp::max(buf.len(), self.0))
+    }
+}
+
+/// Only ever flush exactly the given number of bytes, until the writer is empty.
+#[derive(Debug, Default)]
+pub struct FlushExact(pub usize);
+
+impl WriterPolicy for FlushExact {
+    /// Flushes the buffer if there is not enough room to fit `incoming` bytes,
+    /// but only when the buffer contains at least `self.0` bytes.
+    ///
+    /// Otherwise, calls [`Buffer::make_room()`](::Buffer::make_room)
+    fn before_write(&mut self, buf: &mut Buffer, incoming: usize) -> FlushAmt {
+        ensure_capacity(buf, self.0);
+
+        // don't have enough room to fit the additional bytes but we can't flush,
+        // then make room for (at least some of) the incoming bytes.
+        if incoming > buf.usable_space() && buf.len() < self.0 {
+            buf.make_room();
+        }
+
+        FlushAmt(self.0)
+    }
+
+    fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
+        FlushAmt(self.0)
     }
 }
 
@@ -166,5 +197,13 @@ pub struct FlushOnNewline;
 impl WriterPolicy for FlushOnNewline {
     fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
         FlushAmt(::memchr::memrchr(b'\n', buf.buf()).map_or(0, |n| n + 1))
+    }
+}
+
+fn ensure_capacity(buf: &mut Buffer, min_cap: usize) {
+    let cap = buf.capacity();
+
+    if cap < min_cap {
+        buf.reserve(min_cap - cap);
     }
 }
