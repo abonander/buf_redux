@@ -51,14 +51,16 @@
 //! * Get the inner writer and trimmed buffer with the unflushed data.
 //!
 //! ### More Sensible and Customizable Buffering Behavior
-//! * Tune the behavior of the buffer to your specific use-case using the types in the
+//! Tune the behavior of the buffer to your specific use-case using the types in the
 //! [`policy` module]:
-//!     * Refine `BufReader`'s buffering behavior by implementing the [`ReaderPolicy` trait] or use
-//!       an existing implementation like [`MinBuffered`] to ensure the buffer always contains
-//!       a minimum number of bytes (until the underlying reader is empty).
-//!     * Refine `BufWriter`'s buffering behavior by implementing the [`WriterPolicy` trait]
-//!       or use an existing implementation like [`FlushOn`] to flush when a particular byte
-//!       appears in the buffer (used to implement [`LineWriter`]).
+//!
+//! * Refine `BufReader`'s buffering behavior by implementing the [`ReaderPolicy` trait] or use
+//! an existing implementation like [`MinBuffered`] to ensure the buffer always contains
+//! a minimum number of bytes (until the underlying reader is empty).
+//!
+//! * Refine `BufWriter`'s buffering behavior by implementing the [`WriterPolicy` trait]
+//! or use an existing implementation like [`FlushOn`] to flush when a particular byte
+//! appears in the buffer (used to implement [`LineWriter`]).
 //!
 //! [`policy` module]: policy
 //! [`ReaderPolicy` trait]: policy::ReaderPolicy
