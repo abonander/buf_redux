@@ -54,11 +54,11 @@
 //! Tune the behavior of the buffer to your specific use-case using the types in the
 //! [`policy` module]:
 //!
-//! * Refine `BufReader`'s buffering behavior by implementing the [`ReaderPolicy` trait] or use
+//! * Refine `BufReader`'s behavior by implementing the [`ReaderPolicy` trait] or use
 //! an existing implementation like [`MinBuffered`] to ensure the buffer always contains
 //! a minimum number of bytes (until the underlying reader is empty).
 //!
-//! * Refine `BufWriter`'s buffering behavior by implementing the [`WriterPolicy` trait]
+//! * Refine `BufWriter`'s behavior by implementing the [`WriterPolicy` trait]
 //! or use an existing implementation like [`FlushOn`] to flush when a particular byte
 //! appears in the buffer (used to implement [`LineWriter`]).
 //!
@@ -870,9 +870,9 @@ impl Buffer {
         Self::with_capacity(DEFAULT_BUF_SIZE)
     }
 
-    /// Create a new buffer with the given capacity.
+    /// Create a new buffer with *at least* the given capacity.
     ///
-    /// If the `Vec` ends up with extra capacity, `Buffer` will use all of it.
+    /// If the global allocator returns extra capacity, `Buffer` will use all of it.
     pub fn with_capacity(cap: usize) -> Self {
         Buffer {
             buf: BufImpl::with_capacity(cap),
