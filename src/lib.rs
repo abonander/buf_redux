@@ -77,11 +77,11 @@
 //! When one of these types inserts bytes into its buffer, via `BufRead::fill_buf()` (implicitly
 //! called by `Read::read()`) in `BufReader`'s case or `Write::write()` in `BufWriter`'s case,
 //! the entire buffer is provided to be read/written into and the number of bytes written is saved.
-//! The read/written data then resides in the `0 .. bytes_inserted` slice of the buffer.
+//! The read/written data then resides in the `[0 .. bytes_inserted]` slice of the buffer.
 //!
 //! When bytes are consumed from the buffer, via `BufRead::consume()` or `Write::flush()`,
 //! the number of bytes consumed is added to the start of the slice such that the remaining
-//! data resides in the `bytes_consumed .. bytes_inserted` slice of the buffer.
+//! data resides in the `[bytes_consumed .. bytes_inserted]` slice of the buffer.
 //!
 //! The `std::io` buffered types, and their counterparts in this crate with their default policies,
 //! don't have to deal with partially filled buffers as `BufReader` only reads when empty and
@@ -188,12 +188,21 @@ const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 /// By default this type implements the behavior of its `std` counterpart: it only reads into
 /// the buffer when it is empty.
 ///
-/// To change this type's buffering behavior, change the policy with [`.set_policy()`] using a type
+/// To change this type's behavior, change the policy with [`.set_policy()`] using a type
 /// from the [`policy` module] or your own implementation of [`ReaderPolicy`].
+///
+/// Policies that perform alternating reads and consumes without completely emptying the buffer
+/// may benefit from using a ringbuffer via the [`new_ringbuf()`] and [`with_capacity_ringbuf()`]
+/// constructors. Ringbuffers are only available on supported platforms with the
+/// `slice-deque` feature and have some other caveats; see [the crate root docs][ringbufs-root]
+/// for more details.
 ///
 /// [`.set_policy()`]: BufReader::set_policy
 /// [`policy` module]: policy
 /// [`ReaderPolicy`]: policy::ReaderPolicy
+/// [`new_ringbuf()`]: BufReader::new_ringbuf
+/// [`with_capacity_ringbuf()`]: BufReader::with_capacity_ringbuf
+/// [ringbufs-root]: index.html#ringbuffers--slice-deque-feature
 pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
     // First field for null pointer optimization.
     buf: Buffer,
@@ -202,17 +211,17 @@ pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
 }
 
 impl<R> BufReader<R, StdPolicy> {
-    /// Create a new `BufReader` wrapping `inner`, with a buffer of a
+    /// Create a new `BufReader` wrapping `inner`, utilizing a buffer of
     /// default capacity and the default [`ReaderPolicy`](policy::ReaderPolicy).
     pub fn new(inner: R) -> Self {
         Self::with_capacity(DEFAULT_BUF_SIZE, inner)
     }
 
-    /// Create a new `BufReader` wrapping `inner` with a capacity
+    /// Create a new `BufReader` wrapping `inner`, utilizing a buffer with a capacity
     /// of *at least* `cap` bytes and the default [`ReaderPolicy`](policy::ReaderPolicy).
     ///
-    /// The actual capacity of the buffer may vary based on
-    /// implementation details of the buffer's allocator.
+    /// The actual capacity of the buffer may vary based on implementation details of the global
+    /// allocator.
     pub fn with_capacity(cap: usize, inner: R) -> Self {
         Self::with_buffer(Buffer::with_capacity(cap), inner)
     }
@@ -468,12 +477,21 @@ impl<R: Seek, P: ReaderPolicy> Seek for BufReader<R, P> {
 /// By default this type implements the behavior of its `std` counterpart: it only flushes
 /// the buffer if an incoming write is larger than the remaining space.
 ///
-/// To change this type's buffering behavior, change the policy with [`.set_policy()`] using a type
+/// To change this type's behavior, change the policy with [`.set_policy()`] using a type
 /// from the [`policy` module] or your own implentation of [`WriterPolicy`].
+///
+/// Policies that perform alternating writes and flushes without completely emptying the buffer
+/// may benefit from using a ringbuffer via the [`new_ringbuf()`] and [`with_capacity_ringbuf()`]
+/// constructors. Ringbuffers are only available on supported platforms with the
+/// `slice-deque` feature and have some caveats; see [the docs at the crate root][ringbufs-root]
+/// for more details.
 ///
 /// [`.set_policy()`]: BufWriter::set_policy
 /// [`policy` module]: policy
 /// [`WriterPolicy`]: policy::WriterPolicy
+/// [`new_ringbuf()`]: BufWriter::new_ringbuf
+/// [`with_capacity_ringbuf()`]: BufWriter::with_capacity_ringbuf
+/// [ringbufs-root]: index.html#ringbuffers--slice-deque-feature
 pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
     buf: Buffer,
     inner: W,
@@ -482,23 +500,28 @@ pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
 }
 
 impl<W: Write> BufWriter<W> {
-    /// Wrap `inner` with the default buffer capacity and [`WriterPolicy`](policy::WriterPolicy).
+    /// Create a new `BufWriter` wrapping `inner` with the default buffer capacity and
+    /// [`WriterPolicy`](policy::WriterPolicy).
     pub fn new(inner: W) -> Self {
         Self::with_buffer(Buffer::new(), inner)
     }
 
-    /// Wrap `inner` with the given buffer capacity and the default
-    /// [`WriterPolicy`](policy::WriterPolicy).
+    /// Create a new `BufWriter` wrapping `inner`, utilizing a buffer with a capacity
+    /// of *at least* `cap` bytes and the default [`WriterPolicy`](policy::WriterPolicy).
+    ///
+    /// The actual capacity of the buffer may vary based on implementation details of the global
+    /// allocator.
     pub fn with_capacity(cap: usize, inner: W) -> Self {
         Self::with_buffer(Buffer::with_capacity(cap), inner)
     }
 
-    /// Wrap `inner` with the default buffer capacity and [`WriterPolicy`](policy::WriterPolicy).
+    /// Create a new `BufWriter` wrapping `inner`, utilizing a ringbuffer with the default
+    /// capacity and [`WriterPolicy`](policy::WriterPolicy).
     ///
     /// A ringbuffer never has to move data to make room; consuming bytes from the head
     /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
-    /// `FlushOnNewline` to ensure there is always room to write more data if necessary, without
-    /// expensive copying operations.
+    ///  [`FlushExact`](policy::FlushExact) to ensure there is always room to write more data if
+    /// necessary, without expensive copying operations.
     ///
     /// Only available on platforms with virtual memory support and with the `slice-deque` feature
     /// enabled. The default capacity will differ between Windows and Unix-derivative targets.
@@ -508,13 +531,13 @@ impl<W: Write> BufWriter<W> {
         Self::with_buffer(Buffer::new_ringbuf(), inner)
     }
 
-    /// Wrap `inner` with a ringbuffer with *at least* `cap` capacity
-    /// and the default [`WriterPolicy`](policy::WriterPolicy).
+    /// Create a new `BufWriter` wrapping `inner`, utilizing a ringbuffer with *at least* `cap`
+    /// capacity and the default [`WriterPolicy`](policy::WriterPolicy).
     ///
     /// A ringbuffer never has to move data to make room; consuming bytes from the head
     /// simultaneously makes room at the tail. This is useful in conjunction with a policy like
-    /// `FlushOnNewline` to ensure there is always room to write more data if necessary, without
-    /// expensive copying operations.
+    /// [`FlushExact`](policy::FlushExact) to ensure there is always room to write more data if
+    /// necessary, without expensive copying operations.
     ///
     /// Only available on platforms with virtual memory support and with the `slice-deque` feature
     /// enabled. The capacity will be rounded up to the minimum size for the target platform.
@@ -524,8 +547,8 @@ impl<W: Write> BufWriter<W> {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
 
-    /// Wrap `inner` with an existing [`Buffer`](Buffer) instance and the default
-    /// [`WriterPolicy`](policy::WriterPolicy).
+    /// Create a new `BufWriter` wrapping `inner`, utilizing the existing [`Buffer`](Buffer)
+    /// instance and the default [`WriterPolicy`](policy::WriterPolicy).
     ///
     /// ### Note
     /// Does **not** clear the buffer first! If there is data already in the buffer
@@ -733,14 +756,14 @@ impl<W: Write> LineWriter<W> {
 
     /// Get a mutable reference to the inner writer.
     ///
-    /// ###Note
+    /// ### Note
     /// If the buffer has not been flushed, writing directly to the inner type will cause
     /// data inconsistency.
     pub fn get_mut(&mut self) -> &mut W {
         self.0.get_mut()
     }
 
-    /// Get the capacty of the inner buffer.
+    /// Get the capacity of the inner buffer.
     pub fn capacity(&self) -> usize {
         self.0.capacity()
     }
