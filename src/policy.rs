@@ -12,7 +12,8 @@
 
 use super::Buffer;
 
-/// Flag for `ReaderPolicy` methods to signal whether or not `BufReader` should read into the buffer.
+/// Flag for `ReaderPolicy` methods to signal whether or not `BufReader` should read into
+/// the buffer.
 ///
 /// See `do_read!()` for a shorthand.
 #[derive(Copy, Clone, Debug)]
@@ -25,8 +26,11 @@ macro_rules! do_read (
     () => ( do_read!(true); )
 );
 
-/// Both a `ReaderPolicy` and a `WriterPolicy` that reproduces the behaviors for `std::io::BufReader`
-/// and `std::io::BufWriter`, respectively.
+/// Default policy for both `BufReader` and `BufWriter` that reproduces the behaviors of their
+/// `std::io` counterparts:
+///
+/// * `BufReader`: only reads when the buffer is empty, does not resize or move data.
+/// * `BufWriter`: only flushes the buffer when there is not enough room for an incoming write.
 #[derive(Debug, Default)]
 pub struct StdPolicy;
 
@@ -34,9 +38,9 @@ pub struct StdPolicy;
 pub trait ReaderPolicy {
     /// Consulted before attempting to read into the buffer.
     ///
-    /// Return `DoRead(true)` to issue a read into the buffer
-    /// before reading data out of it, or `DoRead(false)` to read from the buffer as it is,
-    /// even if it's empty. `do_read!()` is provided as a shorthand.
+    /// Return `DoRead(true)` to issue a read into the buffer before reading data out of it,
+    /// or `DoRead(false)` to read from the buffer as it is, even if it's empty.
+    /// `do_read!()` is provided as a shorthand.
     ///
     /// If there is no room in the buffer after this method is called,
     /// the buffer will not be read into (so if the buffer is full but you want more data
@@ -57,6 +61,8 @@ pub trait ReaderPolicy {
     ///
     /// Supplies the true amount consumed if the amount passed to `BufReader::consume`
     /// was in excess.
+    ///
+    /// This is a no-op by default.
     fn after_consume(&mut self, _buffer: &mut Buffer, _amt: usize) {}
 }
 
