@@ -26,7 +26,7 @@ pub enum BufImpl {
 macro_rules! forward_method {
     (pub fn $fnname:ident(&self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub fn $fnname(&self $($args)*) $(-> $ret)* {
-            match self {
+            match *self {
                 BufImpl::Std(ref buf) => buf.$fnname($($passargs)*),
                 #[cfg(feature = "slice-deque")]
                 BufImpl::Ringbuf(ref buf) => buf.$fnname($($passargs)*),
@@ -36,7 +36,7 @@ macro_rules! forward_method {
 
     (pub fn $fnname:ident(&mut self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub fn $fnname(&mut self $($args)*) $(-> $ret)* {
-            match self {
+            match *self {
                 BufImpl::Std(ref mut buf) => buf.$fnname($($passargs)*),
                 #[cfg(feature = "slice-deque")]
                 BufImpl::Ringbuf(ref mut buf) => buf.$fnname($($passargs)*),
@@ -46,7 +46,7 @@ macro_rules! forward_method {
 
     (pub unsafe fn $fnname:ident(&self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub unsafe fn $fnname(&self $($args)*) $(-> $ret)* {
-            match self {
+            match *self {
                 BufImpl::Std(ref buf) => buf.$fnname($($passargs)*),
                 #[cfg(feature = "slice-deque")]
                 BufImpl::Ringbuf(ref buf) => buf.$fnname($($passargs)*),
@@ -56,7 +56,7 @@ macro_rules! forward_method {
 
     (pub unsafe fn $fnname:ident(&mut self $($args:tt)*) [$($passargs:tt)*] $(-> $ret:ty)*) => {
         pub unsafe fn $fnname(&mut self $($args)*) $(-> $ret)* {
-            match self {
+            match *self {
                 BufImpl::Std(ref mut buf) => buf.$fnname($($passargs)*),
                 #[cfg(feature = "slice-deque")]
                 BufImpl::Ringbuf(ref mut buf) => buf.$fnname($($passargs)*),

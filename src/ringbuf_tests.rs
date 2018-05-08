@@ -48,7 +48,7 @@ fn test_buffer_new() {
 #[test]
 fn test_buffer_with_cap() {
     let buf = Buffer::with_capacity_ringbuf(4 * 1024);
-    assert_capacity!(buf, DEFAULT_BUF_SIZE);
+    assert_capacity!(buf, 4 * 1024);
 
     // test rounding up to page size
     let buf = Buffer::with_capacity_ringbuf(64);

@@ -136,25 +136,21 @@
 //! [ringbuf-wikipedia]: https://en.wikipedia.org/wiki/Circular_buffer#Optimization
 #![warn(missing_docs)]
 #![cfg_attr(feature = "nightly", feature(alloc, read_initializer, specialization))]
-#![cfg_attr(test, feature(test))]
-#![cfg_attr(all(test, feature = "nightly"), feature(io))]
+#![cfg_attr(all(test, feature = "nightly"), feature(io, test))]
 
 extern crate memchr;
 
 extern crate safemem;
-
-#[cfg(test)]
-extern crate test;
 
 use std::any::Any;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::{cmp, error, fmt, io, mem, ptr};
 
-#[cfg(test)]
+#[cfg(all(feature = "nightly", test))]
 mod benches;
 
-// ::std::io's tests require exact allocation which slice_deque cannot provide
+// std::io's tests require exact allocation which slice_deque cannot provide
 #[cfg(test)]
 mod std_tests;
 
