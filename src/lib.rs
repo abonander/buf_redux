@@ -131,7 +131,7 @@
 //! allocates will be double its capacity. This means that your program will *appear* to use more
 //! memory than it would if it was using a normal buffer of the same capacity. The physical memory
 //! usage will be the same in both cases, but if address space is at a premium in your application
-//! then this may be a concern.
+//! (32-bit targets) then this may be a concern.
 //!
 //! [ringbuf-wikipedia]: https://en.wikipedia.org/wiki/Circular_buffer#Optimization
 #![warn(missing_docs)]
