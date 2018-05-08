@@ -23,7 +23,6 @@ use std::io::prelude::*;
 use std::io::{self, SeekFrom};
 
 use {Buffer, BufReader, DEFAULT_BUF_SIZE};
-use policy::MinBuffered;
 
 use std_tests::ShortReader;
 

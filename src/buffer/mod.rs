@@ -12,10 +12,10 @@ mod std_buf;
 #[cfg(feature = "slice-deque")]
 mod slice_deque_buf;
 
-pub use self::std_buf::StdBuf;
+use self::std_buf::StdBuf;
 
 #[cfg(feature = "slice-deque")]
-pub use self::slice_deque_buf::SliceDequeBuf;
+use self::slice_deque_buf::SliceDequeBuf;
 
 pub enum BufImpl {
     Std(StdBuf),

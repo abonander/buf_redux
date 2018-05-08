@@ -169,10 +169,7 @@ use nightly::init_buffer;
 
 mod buffer;
 
-use buffer::{BufImpl, StdBuf};
-
-#[cfg(feature = "slice-deque")]
-use buffer::SliceDequeBuf;
+use buffer::BufImpl;
 
 pub mod policy;
 

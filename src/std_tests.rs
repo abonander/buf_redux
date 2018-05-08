@@ -14,7 +14,7 @@
 //! They assume exact capacity allocation
 
 use std::io::prelude::*;
-use std::io::{self, Cursor, SeekFrom};
+use std::io::{self, SeekFrom};
 use {BufReader, BufWriter, LineWriter};
 
 /// A dummy reader intended at testing short-reads propagation.
@@ -311,26 +311,4 @@ fn test_buf_writer_drops_once() {
 
     let writer = BufWriter::new(CountDrops(0));
     let (_, _) = writer.into_inner_with_buffer();
-}
-
-#[test]
-fn test_min_buffered() {
-    use policy::MinBuffered;
-
-    let min_buffered = 5;
-    let data = (0 .. 20).collect::<Vec<u8>>();
-    let mut reader = BufReader::with_capacity(min_buffered * 2 - 1, Cursor::new(data))
-        .set_policy(MinBuffered(min_buffered));
-
-    assert_eq!(reader.fill_buf().unwrap(), &[0, 1, 2, 3, 4, 5, 6, 7, 8][..]);
-    reader.consume(2);
-    assert_eq!(reader.fill_buf().unwrap(), &[2, 3, 4, 5, 6, 7, 8][..]);
-    reader.consume(2);
-    assert_eq!(reader.fill_buf().unwrap(), &[4, 5, 6, 7, 8][..]);
-    reader.consume(4);
-    // normal reader wouldn't get more data until it was empty
-    assert_eq!(reader.fill_buf().unwrap(), &[8, 9, 10, 11, 12, 13, 14, 15, 16][..]);
-    reader.consume(8);
-    assert_eq!(reader.fill_buf().unwrap(), &[16, 17, 18, 19]);
-
 }

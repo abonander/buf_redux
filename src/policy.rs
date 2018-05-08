@@ -79,6 +79,9 @@ impl MinBuffered {
 
 impl ReaderPolicy for MinBuffered {
     fn before_read(&mut self, buffer: &mut Buffer) -> DoRead {
+        // do nothing if we have enough data
+        if buffer.len() >= self.0 { do_read!(false) }
+
         let cap = buffer.capacity();
 
         // if there's enough room but some of it's stuck after the head
@@ -88,7 +91,7 @@ impl ReaderPolicy for MinBuffered {
             buffer.reserve(self.0 - cap);
         }
 
-        DoRead(buffer.len() < self.0)
+        DoRead(true)
     }
 }
 
@@ -170,7 +173,8 @@ impl WriterPolicy for FlushExact {
         FlushAmt(self.0)
     }
 
-    fn after_write(&mut self, buf: &Buffer) -> FlushAmt {
+    /// Flushes the given amount if possible, nothing otherwise.
+    fn after_write(&mut self, _buf: &Buffer) -> FlushAmt {
         FlushAmt(self.0)
     }
 }
@@ -205,5 +209,98 @@ fn ensure_capacity(buf: &mut Buffer, min_cap: usize) {
 
     if cap < min_cap {
         buf.reserve(min_cap - cap);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use {BufReader, BufWriter};
+    use policy::*;
+    use std::io::{BufRead, Cursor, Write};
+
+    #[test]
+    fn test_min_buffered() {
+        let min_buffered = 4;
+        let data = (0 .. 20).collect::<Vec<u8>>();
+        // create a reader with 0 capacity
+        let mut reader = BufReader::with_capacity(0, Cursor::new(data))
+            .set_policy(MinBuffered(min_buffered));
+
+        // policy reserves the required space in the buffer
+        assert_eq!(reader.fill_buf().unwrap(), &[0, 1, 2, 3][..]);
+        assert_eq!(reader.capacity(), min_buffered);
+
+        // double the size now that the buffer's full
+        reader.reserve(min_buffered);
+        assert_eq!(reader.capacity(), min_buffered * 2);
+
+        // we haven't consumed anything, the reader should have the same data
+        assert_eq!(reader.fill_buf().unwrap(), &[0, 1, 2, 3]);
+        reader.consume(2);
+        // policy read more data, `std::io::BufReader` doesn't do that
+        assert_eq!(reader.fill_buf().unwrap(), &[2, 3, 4, 5, 6, 7]);
+        reader.consume(4);
+        // policy made room and read more
+        assert_eq!(reader.fill_buf().unwrap(), &[6, 7, 8, 9, 10, 11, 12, 13]);
+        reader.consume(4);
+        assert_eq!(reader.fill_buf().unwrap(), &[10, 11, 12, 13]);
+        reader.consume(2);
+        assert_eq!(reader.fill_buf().unwrap(), &[12, 13, 14, 15, 16, 17, 18, 19]);
+        reader.consume(8);
+        assert_eq!(reader.fill_buf().unwrap(), &[])
+    }
+
+    #[test]
+    fn test_flush_at_least() {
+        let flush_min = 4;
+
+        let mut writer = BufWriter::with_capacity(0, vec![]).set_policy(FlushAtLeast(flush_min));
+        assert_eq!(writer.capacity(), 0);
+        assert_eq!(writer.write(&[1]).unwrap(), 1);
+        // policy reserved space for writing
+        assert_eq!(writer.capacity(), flush_min);
+        // one byte in buffer, we want to double our capacity
+        writer.reserve(flush_min * 2 - 1);
+        assert_eq!(writer.capacity(), flush_min * 2);
+
+        assert_eq!(writer.write(&[2, 3]).unwrap(), 2);
+        // no flush yet, only 3 bytes in buffer
+        assert_eq!(*writer.get_ref(), &[]);
+
+        assert_eq!(writer.write(&[4, 5, 6]).unwrap(), 3);
+        // flushed all
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, 4, 5, 6]);
+
+        assert_eq!(writer.write(&[7, 8, 9]).unwrap(), 3);
+        // `.into_inner()` should flush always
+        assert_eq!(writer.into_inner().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn test_flush_exact() {
+        let flush_exact = 4;
+
+        let mut writer = BufWriter::with_capacity(0, vec![]).set_policy(FlushExact(flush_exact));
+        assert_eq!(writer.capacity(), 0);
+        assert_eq!(writer.write(&[1]).unwrap(), 1);
+        // policy reserved space for writing
+        assert_eq!(writer.capacity(), flush_exact);
+        // one byte in buffer, we want to double our capacity
+        writer.reserve(flush_exact * 2 - 1);
+        assert_eq!(writer.capacity(), flush_exact * 2);
+
+        assert_eq!(writer.write(&[2, 3]).unwrap(), 2);
+        // no flush yet, only 3 bytes in buffer
+        assert_eq!(*writer.get_ref(), &[]);
+
+        assert_eq!(writer.write(&[4, 5, 6]).unwrap(), 3);
+        // flushed exactly 4 bytes
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, 4]);
+
+        assert_eq!(writer.write(&[7, 8, 9, 10]).unwrap(), 4);
+        // flushed another 4 bytes
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+        // `.into_inner()` should flush always
+        assert_eq!(writer.into_inner().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
 }
