@@ -63,10 +63,39 @@ pub trait ReaderPolicy {
 /// Behavior of `std::io::BufReader`: the buffer will only be read into if it is empty.
 impl ReaderPolicy for StdPolicy {}
 
-/// A `ReaderPolicy` which ensures there are at least this many bytes in the buffer,
-/// failing this only if the reader is at EOF.
+/// A policy for [`BufReader`](::BufReader) which ensures there is at least the given number of
+/// bytes in  the buffer, failing this only if the reader is at EOF.
 ///
 /// If the minimum buffer length is greater than the buffer capacity, it will be resized.
+///
+/// ### Example
+/// ```rust
+/// use buf_redux::BufReader;
+/// use buf_redux::policy::MinBuffered;
+/// use std::io::{BufRead, Cursor};
+/// 
+/// let data = (1 .. 16).collect::<Vec<u8>>();
+///
+/// // normally you should use `BufReader::new()` or give a capacity of several KiB or more
+/// let mut reader = BufReader::with_capacity(8, Cursor::new(data))
+///     // always at least 4 bytes in the buffer (or until the source is empty)
+///     .set_policy(MinBuffered(4)); // always at least 4 bytes in the buffer
+///
+/// // first buffer fill, same as `std::io::BufReader`
+/// assert_eq!(reader.fill_buf().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8]);
+/// reader.consume(3);
+///
+/// // enough data in the buffer, another read isn't done yet
+/// assert_eq!(reader.fill_buf().unwrap(), &[4, 5, 6, 7, 8]);
+/// reader.consume(4);
+///
+/// // `std::io::BufReader` would return `&[8]`
+/// assert_eq!(reader.fill_buf().unwrap(), &[8, 9, 10, 11, 12, 13, 14, 15]);
+/// reader.consume(5);
+///
+/// // no data left in the reader
+/// assert_eq!(reader.fill_buf().unwrap(), &[13, 14, 15]);
+/// ```
 #[derive(Debug)]
 pub struct MinBuffered(pub usize);
 
