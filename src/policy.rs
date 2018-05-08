@@ -332,4 +332,38 @@ mod test {
         // `.into_inner()` should flush always
         assert_eq!(writer.into_inner().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
+
+    #[test]
+    fn test_flush_on() {
+        let mut writer = BufWriter::with_capacity(8, vec![]).set_policy(FlushOn(0));
+
+        assert_eq!(writer.write(&[1, 2, 3]).unwrap(), 3);
+        assert_eq!(*writer.get_ref(), &[]);
+
+        assert_eq!(writer.write(&[0, 4, 5]).unwrap(), 3);
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, 0]);
+
+        assert_eq!(writer.write(&[6, 7, 8, 9, 10, 11, 12]).unwrap(), 7);
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, 0, 4, 5]);
+
+        assert_eq!(writer.write(&[0]).unwrap(), 1);
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, 0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0]);
+    }
+
+    #[test]
+    fn test_flush_on_newline() {
+        let mut writer = BufWriter::with_capacity(8, vec![]).set_policy(FlushOnNewline);
+
+        assert_eq!(writer.write(&[1, 2, 3]).unwrap(), 3);
+        assert_eq!(*writer.get_ref(), &[]);
+
+        assert_eq!(writer.write(&[b'\n', 4, 5]).unwrap(), 3);
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, b'\n']);
+
+        assert_eq!(writer.write(&[6, 7, 8, 9, b'\n', 11, 12]).unwrap(), 7);
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, b'\n', 4, 5, 6, 7, 8, 9, b'\n']);
+
+        assert_eq!(writer.write(&[b'\n']).unwrap(), 1);
+        assert_eq!(*writer.get_ref(), &[1, 2, 3, b'\n', 4, 5, 6, 7, 8, 9, b'\n', 11, 12, b'\n']);
+    }
 }
