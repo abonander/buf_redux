@@ -21,7 +21,7 @@ memchr = "2.0"
 
 # `slice_deque` is only supported on platforms with virtual memory
 [target.'cfg(any(unix, windows))'.dependencies.slice-deque]
-git = "https://github.com/gnzlbg/slice_deque"
+version = "0.1.8"
 optional = true
 
 [features]
