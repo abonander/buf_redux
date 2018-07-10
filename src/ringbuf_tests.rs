@@ -266,4 +266,22 @@ fn test_mirror_boundary() {
     assert_eq!(buffer.usable_space(), cap);
 }
 
+#[test]
+fn issue_8(){
+    let source = vec![0u8; 4096*4];
+
+    let mut rdr = BufReader::with_capacity_ringbuf(4096, source.as_slice());
+
+    loop {
+        let n = rdr.read_into_buf().unwrap();
+        if n == 0 {
+            break;
+        }
+        rdr.consume(4000);
+        // rdr.make_room(); // (only necessary with 'standard' reader)
+
+        println!("{}", n);
+    }
+}
+
 // `BufWriter` doesn't utilize a ringbuffer
