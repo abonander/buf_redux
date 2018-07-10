@@ -1,4 +1,8 @@
-# buf\_re(a)dux
+# buf\_re(a)dux 
+[![Travis](https://img.shields.io/travis/abonander/buf_redux.svg)](https://travis-ci.org/abonander/buf_redux)
+[![Crates.io](https://img.shields.io/crates/v/buf_redux.svg)](https://crates.io/crates/buf_redux)
+[![Crates.io](https://img.shields.io/crates/d/buf_redux.svg)](https://crates.io/crates/buf_redux)
+[![Crates.io](https://img.shields.io/crates/l/buf_redux.svg)](https://crates.io/crates/buf_redux)
 
 Drop-in replacements for buffered I/O types in `std::io`.
 
@@ -37,7 +41,7 @@ appears in the buffer (used to implement `LineWriter`).
 
 ## Usage
 
-####[Documentation](http://docs.rs/buf_redux/)
+#### [Documentation](http://docs.rs/buf_redux/)
 
 `Cargo.toml`:
 ```toml
