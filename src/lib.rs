@@ -143,6 +143,7 @@ extern crate memchr;
 extern crate safemem;
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::{cmp, error, fmt, io, mem, ptr};
@@ -196,7 +197,7 @@ const DEFAULT_BUF_SIZE: usize = 8 * 1024;
 /// [`new_ringbuf()`]: BufReader::new_ringbuf
 /// [`with_capacity_ringbuf()`]: BufReader::with_capacity_ringbuf
 /// [ringbufs-root]: index.html#ringbuffers--slice-deque-feature
-pub struct BufReader<R, P: ReaderPolicy = StdPolicy>{
+pub struct BufReader<R, P = StdPolicy>{
     // First field for null pointer optimization.
     buf: Buffer,
     inner: R,
@@ -265,27 +266,32 @@ impl<R> BufReader<R, StdPolicy> {
     }
 }
 
-impl<R, P: ReaderPolicy> BufReader<R, P> {
+impl<R, P> BufReader<R, P> {
     /// Apply a new `ReaderPolicy` to this `BufReader`, returning the transformed type.
     pub fn set_policy<P_: ReaderPolicy>(self, policy: P_) -> BufReader<R, P_> {
-        BufReader { 
+        BufReader {
             inner: self.inner,
             buf: self.buf,
             policy
         }
     }
 
-    /// Accessor for updating the `ReaderPolicy` in-place.
+    /// Mutate the current [`ReaderPolicy`](policy::ReaderPolicy) in-place.
     ///
     /// If you want to change the type, use `.set_policy()`.
     pub fn policy_mut(&mut self) -> &mut P { &mut self.policy }
+
+    /// Inspect the current `ReaderPolicy`.
+    pub fn policy(&self) -> &P {
+        &self.policy
+    }
 
     /// Move data to the start of the buffer, making room at the end for more 
     /// reading.
     ///
     /// This is a no-op with the `*_ringbuf()` constructors (requires `slice-deque` feature).
     pub fn make_room(&mut self) {
-        self.buf.make_room();        
+        self.buf.make_room();
     }
 
     /// Ensure room in the buffer for *at least* `additional` bytes. May not be
@@ -343,14 +349,16 @@ impl<R, P: ReaderPolicy> BufReader<R, P> {
             buf: Some(self.buf),
         }
     }
+}
 
+impl<R, P: ReaderPolicy> BufReader<R, P> {
     #[inline]
     fn should_read(&mut self) -> bool {
         self.policy.before_read(&mut self.buf).0
     }
 }
 
-impl<R: Read, P: ReaderPolicy> BufReader<R, P> {
+impl<R: Read, P> BufReader<R, P> {
     /// Unconditionally perform a read into the buffer.
     ///
     /// Does not invoke `ReaderPolicy` methods.
@@ -406,7 +414,7 @@ impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     }
 }
 
-impl<R: fmt::Debug, P: ReaderPolicy + fmt::Debug> fmt::Debug for BufReader<R, P> {
+impl<R: fmt::Debug, P: fmt::Debug> fmt::Debug for BufReader<R, P> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("buf_redux::BufReader")
             .field("reader", &self.inner)
@@ -485,7 +493,7 @@ impl<R: Seek, P: ReaderPolicy> Seek for BufReader<R, P> {
 /// [`new_ringbuf()`]: BufWriter::new_ringbuf
 /// [`with_capacity_ringbuf()`]: BufWriter::with_capacity_ringbuf
 /// [ringbufs-root]: index.html#ringbuffers--slice-deque-feature
-pub struct BufWriter<W: Write, P: WriterPolicy = StdPolicy> {
+pub struct BufWriter<W: Write, P = StdPolicy> {
     buf: Buffer,
     inner: W,
     policy: P,
@@ -553,7 +561,7 @@ impl<W: Write> BufWriter<W> {
     }
 }
 
-impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
+impl<W: Write, P> BufWriter<W, P> {
     /// Set a new [`WriterPolicy`](policy::WriterPolicy), returning the transformed type.
     pub fn set_policy<P_: WriterPolicy>(self, policy: P_) -> BufWriter<W, P_> {
         let panicked = self.panicked;
@@ -567,6 +575,11 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
     /// Mutate the current [`WriterPolicy`](policy::WriterPolicy).
     pub fn policy_mut(&mut self) -> &mut P {
         &mut self.policy
+    }
+
+    /// Inspect the current `WriterPolicy`.
+    pub fn policy(&self) -> &P {
+        &self.policy
     }
 
     /// Get a reference to the inner writer.
@@ -607,22 +620,6 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
         self.buf.make_room();
     }
 
-    /// Flush the buffer and unwrap, returning the inner writer on success,
-    /// or a type wrapping `self` plus the error otherwise.
-    pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
-        match self.flush() {
-            Err(e) => Err(IntoInnerError(self, e)),
-            Ok(()) => Ok(self.into_inner_().0),
-        }
-    }
-
-    /// Flush the buffer and unwrap, returning the inner writer and
-    /// any error encountered during flushing.
-    pub fn into_inner_with_err(mut self) -> (W, Option<io::Error>) {
-        let err = self.flush().err();
-        (self.into_inner_().0, err)
-    }
-
     /// Consume `self` and return both the underlying writer and the buffer
     pub fn into_inner_with_buffer(self) -> (W, Buffer) {
         self.into_inner_()
@@ -646,6 +643,24 @@ impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
         let ret = self.buf.write_max(amt, &mut self.inner);
         self.panicked = false;
         ret
+    }
+}
+
+impl<W: Write, P: WriterPolicy> BufWriter<W, P> {
+    /// Flush the buffer and unwrap, returning the inner writer on success,
+    /// or a type wrapping `self` plus the error otherwise.
+    pub fn into_inner(mut self) -> Result<W, IntoInnerError<Self>> {
+        match self.flush() {
+            Err(e) => Err(IntoInnerError(self, e)),
+            Ok(()) => Ok(self.into_inner_().0),
+        }
+    }
+
+    /// Flush the buffer and unwrap, returning the inner writer and
+    /// any error encountered during flushing.
+    pub fn into_inner_with_err(mut self) -> (W, Option<io::Error>) {
+        let err = self.flush().err();
+        (self.into_inner_().0, err)
     }
 }
 
@@ -686,7 +701,7 @@ impl<W: Write + Seek, P: WriterPolicy> Seek for BufWriter<W, P> {
     }
 }
 
-impl<W: fmt::Debug + Write, P: WriterPolicy + fmt::Debug> fmt::Debug for BufWriter<W, P> {
+impl<W: Write + fmt::Debug, P: fmt::Debug> fmt::Debug for BufWriter<W, P> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufWriter")
             .field("writer", &self.inner)
@@ -696,11 +711,21 @@ impl<W: fmt::Debug + Write, P: WriterPolicy + fmt::Debug> fmt::Debug for BufWrit
     }
 }
 
-impl<W: Write, P: WriterPolicy> Drop for BufWriter<W, P> {
+
+/// Attempt to flush the buffer to the underlying writer.
+///
+/// If an error occurs, the thread-local handler is invoked, if one was previously
+/// set by [`set_drop_err_handler`](set_drop_err_handler) for this thread.
+impl<W: Write, P> Drop for BufWriter<W, P> {
     fn drop(&mut self) {
         if !self.panicked {
-            // dtors should not panic, so we ignore a failed flush
-            let _r = self.flush();
+            // instead of ignoring a failed flush, call the handler
+            let buf_len = self.buf.len();
+            if let Err(err) = self.flush_buf(buf_len) {
+                DROP_ERR_HANDLER.with(|deh| {
+                    (*deh.borrow())(&mut self.inner, &mut self.buf, err)
+                });
+            }
         }
     }
 }
@@ -801,7 +826,7 @@ impl<W: Write> Write for LineWriter<W> {
     }
 }
 
-impl<W: fmt::Debug + Write> fmt::Debug for LineWriter<W> {
+impl<W: Write + fmt::Debug> fmt::Debug for LineWriter<W> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::LineWriter")
             .field("writer", self.get_ref())
@@ -1237,6 +1262,25 @@ pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
     }
 
     Ok(total_copied)
+}
+
+thread_local!(
+    static DROP_ERR_HANDLER: RefCell<Box<Fn(&mut Write, &mut Buffer, io::Error)>>
+        = RefCell::new(Box::new(|_, _, _| ()))
+);
+
+/// Set a thread-local handler for errors thrown in `BufWriter`'s `Drop` impl.
+///
+/// The `Write` impl, buffer (at the time of the erroring write) and IO error are provided.
+///
+/// Replaces the previous handler. By default this is a no-op.
+///
+/// ### Panics
+/// If called from within a handler previously provided to this function.
+pub fn set_drop_err_handler<F: 'static>(handler: F)
+where F: Fn(&mut Write, &mut Buffer, io::Error)
+{
+    DROP_ERR_HANDLER.with(|deh| *deh.borrow_mut() = Box::new(handler))
 }
 
 #[cfg(not(feature = "nightly"))]
