@@ -528,6 +528,7 @@ impl<W: Write> BufWriter<W> {
     /// enabled. The default capacity will differ between Windows and Unix-derivative targets.
     /// See [`Buffer::new_ringbuf()`](Buffer::new_ringbuf)
     /// or [the crate root docs](index.html#ringbuffers--slice-deque-feature) for more info.
+    #[cfg(feature = "slice-deque")]
     pub fn new_ringbuf(inner: W) -> Self {
         Self::with_buffer(Buffer::new_ringbuf(), inner)
     }
@@ -544,6 +545,7 @@ impl<W: Write> BufWriter<W> {
     /// enabled. The capacity will be rounded up to the minimum size for the target platform.
     /// See [`Buffer::with_capacity_ringbuf()`](Buffer::with_capacity_ringbuf)
     /// or [the crate root docs](index.html#ringbuffers--slice-deque-feature) for more info.
+    #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
@@ -749,11 +751,13 @@ impl<W: Write> LineWriter<W> {
     }
 
     /// Wrap `inner` with the default buffer capacity using a ringbuffer.
+    #[cfg(feature = "slice-deque")]
     pub fn new_ringbuf(inner: W) -> Self {
         Self::with_buffer(Buffer::new_ringbuf(), inner)
     }
 
     /// Wrap `inner` with the given buffer capacity using a ringbuffer.
+    #[cfg(feature = "slice-deque")]
     pub fn with_capacity_ringbuf(cap: usize, inner: W) -> Self {
         Self::with_buffer(Buffer::with_capacity_ringbuf(cap), inner)
     }
