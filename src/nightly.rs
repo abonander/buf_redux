@@ -11,37 +11,69 @@
 use std::fmt;
 use std::io::{Read, Write};
 
-use super::{BufReader, BufWriter, LineWriter};
+use super::{BufReader, BufWriter, LineWriter, Unbuffer};
 
-use policy::{WriterPolicy, MoveStrategy, ReaderPolicy};
+/// Wrapper specializing for `Debug` or defaulting to a string.
+///
+/// Specializing `Debug` impls with two type params would equire 4 `impl` blocks
+/// if it were even possible, but that also requires lattice impls.
+///
+/// Instead, we specialize one impl per type and then in that impl also use specialization.
+struct SpecialDebug<T> {
+    val: T,
+    default: &'static str,
+}
 
-impl<R, Rs: ReaderPolicy> fmt::Debug for BufReader<R, Rs> {
+impl<T> fmt::Debug for SpecialDebug<T> {
+    default fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.default)
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for SpecialDebug<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        T::fmt(&self.val, f)
+    }
+}
+
+impl<R, P> fmt::Debug for BufReader<R, P> {
     default fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufReader")
-            .field("reader", &"(no Debug impl)")
-            .field("available", &self.buf_len())
+            .field("reader", &SpecialDebug { val: &self.inner, default: "(impl std::io::Read)" })
+            .field("buf_len", &self.buf_len())
             .field("capacity", &self.capacity())
-            .field("read_strategy", &self.read_strat)
-            .field("move_strategy", &self.move_strat)
+            .field("policy",
+                   &SpecialDebug { val: &self.policy, default: ("(impl buf_redux::ReaderPolicy)")})
             .finish()
     }
 }
 
-impl<W: Write, Fs: WriterPolicy> fmt::Debug for BufWriter<W, Fs> {
+impl<W: Write, P> fmt::Debug for BufWriter<W, P> {
     default fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::BufWriter")
-            .field("writer", &"(no Debug impl)")
+            .field("writer", &SpecialDebug { val: &self.inner, default: "(impl std::io::Write)"})
             .field("capacity", &self.capacity())
-            .field("flush_strategy", &self.policy)
+            .field("policy",
+                   &SpecialDebug { val: &self.policy, default: "(impl buf_redux::WriterPolicy)"})
             .finish()
     }
 }
 
+// vanilla specializations
 impl<W: Write> fmt::Debug for LineWriter<W> {
     default fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::LineWriter")
-            .field("writer", &"(no Debug impl)")
+            .field("writer", &"(impl std::io::Write)")
             .field("capacity", &self.capacity())
+            .finish()
+    }
+}
+
+impl<R> fmt::Debug for Unbuffer<R> {
+    default fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("buf_redux::Unbuffer")
+            .field("reader", &"(impl std::io::Read)")
+            .field("buffer", &self.buf)
             .finish()
     }
 }

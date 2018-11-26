@@ -135,7 +135,7 @@
 //!
 //! [ringbuf-wikipedia]: https://en.wikipedia.org/wiki/Circular_buffer#Optimization
 #![warn(missing_docs)]
-#![cfg_attr(feature = "nightly", feature(alloc, read_initializer, specialization))]
+#![cfg_attr(feature = "nightly", feature(alloc, read_initializer, specialization, raw_vec_internals))]
 #![cfg_attr(all(test, feature = "nightly"), feature(io, test))]
 
 extern crate memchr;
