@@ -1,6 +1,6 @@
 [package]
 name = "buf_redux"
-version = "0.8.1"
+version = "0.8.2"
 authors = ["Austin Bonander <austin.bonander@gmail.com>"]
 
 description = "Drop-in replacements for buffered I/O in `std::io` with extra features."
