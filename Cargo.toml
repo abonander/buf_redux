@@ -16,7 +16,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 
 [dependencies]
-safemem = "0.2"
+safemem = "0.3"
 memchr = "2.0"
 
 # `slice_deque` is only supported on platforms with virtual memory
