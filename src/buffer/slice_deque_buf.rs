@@ -48,6 +48,11 @@ impl SliceDequeBuf {
         true
     }
 
+    pub fn resize(&mut self, new_len: usize, value: u8) -> bool {
+        self.deque.resize(new_len, value);
+        true
+    }
+
     /// This method is a no-op.
     pub fn make_room(&mut self) {}
 
@@ -79,5 +84,9 @@ impl SliceDequeBuf {
 
             self.deque.move_head(offset);
         }
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        self.deque.truncate_back(len);
     }
 }

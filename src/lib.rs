@@ -1012,6 +1012,31 @@ impl Buffer {
         }
     }
 
+    /// Resizes the buffer in-place sto that `len` is equal to `new_len`.
+    ///
+    /// If `new_len` is greater than `len`, the buffer is extended by the difference,
+    /// with each additional slot filled with `value`. If `new_len` is less than `len`,
+    /// the buffer is simply truncated.
+    ///
+    /// Note that this will reallocate even if there is enough free space at the head of
+    /// the buffer if `len() + usable_space() < new_len`.
+    ///
+    /// If you prefer copying data down in the buffer before attempting to reallocate
+    /// you may wish to call `.make_room()` first.
+    pub fn resize(&mut self, new_len: usize, value: u8) {
+        // Returns `true` if we reallocated out-of-place and thus need to re-zero.
+        if self.buf.resize(new_len, value) {
+            self.zeroed = 0;
+        }
+    }
+
+    /// Resizes the buffer in-place sto that `len` is equal to `new_len`.
+    ///
+    /// Same as calling `.resize(new_len, 0)`.
+    pub fn resize_default(&mut self, new_len: usize) {
+        self.buf.resize(new_len, 0);
+    }
+
     /// Get an immutable slice of the available bytes in this buffer.
     ///
     /// Call `.consume()` to remove bytes from the beginning of this slice.
@@ -1173,6 +1198,13 @@ impl Buffer {
     /// Consume `amt` bytes from the head of this buffer.
     pub fn consume(&mut self, amt: usize) {
         self.buf.consume(amt);
+    }
+
+    /// Shortens the buffer, keeping the first `len`.
+    ///
+    /// If `len` is greater then buffer's length, this has no effect.
+    pub fn truncate(&mut self, len: usize) {
+        self.buf.truncate(len);
     }
 
     /// Empty this buffer by consuming all bytes.

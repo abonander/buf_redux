@@ -63,6 +63,25 @@ impl StdBuf {
         self.buf.reserve(additional - usable_space)
     }
 
+    pub fn resize(&mut self, new_len: usize, value: u8) -> bool {
+        if new_len <= self.len() {
+            self.truncate(new_len);
+            false
+        } else {
+            let additional = new_len - self.len();
+            let res = self.reserve(additional);
+
+            unsafe {
+                for x in &mut self.buf.as_mut_slice()[self.end .. self.end + additional] {
+                    *x = value;
+                }
+            }
+
+            self.end += additional;
+            res
+        }
+    }
+
     pub fn make_room(&mut self) {
         self.check_cursors();
 
@@ -101,6 +120,11 @@ impl StdBuf {
 
     pub fn consume(&mut self, amt: usize) {
         self.pos = cmp::min(self.pos + amt, self.end);
+        self.check_cursors();
+    }
+
+    pub fn truncate(&mut self, len: usize) {
+        self.end = cmp::min(self.pos + len, self.end);
         self.check_cursors();
     }
 
@@ -232,4 +256,95 @@ fn read_into_full() {
     // Result<usize, io::Error> does not impl PartialEq
     assert_eq!(buffer.read_from(&mut bytes).unwrap(), 1);
     assert_eq!(buffer.read_from(&mut bytes).unwrap(), 0);
+}
+
+#[test]
+fn test_truncate() {
+    use Buffer;
+    let mut buffer = Buffer::with_capacity(32);
+
+    buffer.truncate(5);
+    assert_eq!(buffer.len(), 0);
+
+    buffer.push_bytes(&[1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(buffer.len(), 7);
+
+    buffer.truncate(10);
+    assert_eq!(buffer.len(), 7);
+
+    buffer.truncate(7);
+    assert_eq!(buffer.len(), 7);
+
+    buffer.truncate(5);
+    assert_eq!(buffer.len(), 5);
+    assert_eq!(buffer.buf(), &[1, 2, 3, 4, 5]);
+
+    buffer.consume(1);
+    buffer.truncate(3);
+    assert_eq!(buffer.len(), 3);
+    assert_eq!(buffer.buf(), &[2, 3, 4]);
+
+    buffer.truncate(0);
+    assert_eq!(buffer.len(), 0);
+}
+
+#[test]
+fn test_resize() {
+    use Buffer;
+    let mut buffer = Buffer::with_capacity(10);
+
+    buffer.resize(10, 0);
+    assert_eq!(buffer.len(), 10);
+    assert_eq!(buffer.capacity(), 10);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+    buffer.resize(11, 1);
+    assert_eq!(buffer.len(), 11);
+    assert_eq!(buffer.capacity(), 11);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+    buffer.resize(5, 2);
+    assert_eq!(buffer.len(), 5);
+    assert_eq!(buffer.capacity(), 11);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0]);
+
+    buffer.resize(7, 3);
+    assert_eq!(buffer.len(), 7);
+    assert_eq!(buffer.capacity(), 11);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 0, 0, 3, 3]);
+    assert_eq!(buffer.usable_space(), 4);
+    assert_eq!(buffer.free_space(), 4);
+
+    buffer.consume(2);
+    buffer.resize(7, 4);
+    assert_eq!(buffer.len(), 7);
+    assert_eq!(buffer.capacity(), 11);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 3, 3, 4, 4]);
+    assert_eq!(buffer.usable_space(), 2);
+    assert_eq!(buffer.free_space(), 4);
+
+    buffer.resize(11, 5);
+    assert_eq!(buffer.len(), 11);
+    assert_eq!(buffer.capacity(), 13);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 3, 3, 4, 4, 5, 5, 5, 5]);
+    assert_eq!(buffer.usable_space(), 0);
+    assert_eq!(buffer.free_space(), 2);
+
+    buffer.make_room();
+    assert_eq!(buffer.usable_space(), 2);
+    assert_eq!(buffer.free_space(), 2);
+
+    buffer.resize(13, 6);
+    assert_eq!(buffer.len(), 13);
+    assert_eq!(buffer.capacity(), 13);
+    assert_eq!(buffer.buf(), &[0, 0, 0, 3, 3, 4, 4, 5, 5, 5, 5, 6, 6]);
+    assert_eq!(buffer.usable_space(), 0);
+    assert_eq!(buffer.free_space(), 0);
+
+    buffer.resize(0, 7);
+    assert_eq!(buffer.len(), 0);
+    assert_eq!(buffer.capacity(), 13);
+    assert_eq!(buffer.buf(), &[]);
+    assert_eq!(buffer.usable_space(), 13);
+    assert_eq!(buffer.free_space(), 13);
 }
