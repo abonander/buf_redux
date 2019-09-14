@@ -100,6 +100,8 @@ impl BufImpl {
 
         pub fn reserve(&mut self, additional: usize)[additional] -> bool;
 
+        pub fn resize(&mut self, new_len: usize, value: u8)[new_len, value] -> bool;
+
         pub fn make_room(&mut self)[];
 
         pub fn buf(&self)[] -> &[u8];
@@ -111,5 +113,7 @@ impl BufImpl {
         pub unsafe fn bytes_written(&mut self, add: usize)[add];
 
         pub fn consume(&mut self, amt: usize)[amt];
+
+        pub fn truncate(&mut self, len: usize)[len];
     }
 }
