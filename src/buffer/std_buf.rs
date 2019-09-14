@@ -160,7 +160,7 @@ mod impl_ {
 
         pub fn reserve_in_place(&mut self, _additional: usize) -> bool {
             // `Vec` does not support this
-            return false;
+            false
         }
 
         pub unsafe fn as_slice(&self) -> &[u8] {

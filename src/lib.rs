@@ -370,9 +370,9 @@ impl<R: Read, P> BufReader<R, P> {
     }
 
     /// Box the inner reader without losing data.
-    pub fn boxed<'a>(self) -> BufReader<Box<Read + 'a>, P> where R: 'a {
-        let inner: Box<Read + 'a> = Box::new(self.inner);
-        
+    pub fn boxed<'a>(self) -> BufReader<Box<dyn Read + 'a>, P> where R: 'a {
+        let inner: Box<dyn Read + 'a> = Box::new(self.inner);
+
         BufReader {
             inner,
             buf: self.buf,
@@ -868,7 +868,7 @@ impl<W: Any + Send + fmt::Debug> error::Error for IntoInnerError<W> {
         error::Error::description(self.error())
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         Some(&self.1)
     }
 }
@@ -1047,7 +1047,7 @@ impl Buffer {
         }
 
         let read = {
-            let mut buf = unsafe { self.buf.write_buf() };
+            let buf = unsafe { self.buf.write_buf() };
             rdr.read(buf)?
         };
 
@@ -1065,7 +1065,7 @@ impl Buffer {
     /// space, this returns 0.
     pub fn copy_from_slice(&mut self, src: &[u8]) -> usize {
         let len = unsafe {
-            let mut buf = self.buf.write_buf();
+            let buf = self.buf.write_buf();
             let len = cmp::min(buf.len(), src.len());
             buf[..len].copy_from_slice(&src[..len]);
             len
@@ -1086,7 +1086,7 @@ impl Buffer {
     /// If the count returned by `wrt.write()` would cause the head cursor to overflow or pass
     /// the tail cursor if added to it.
     pub fn write_to<W: Write + ?Sized>(&mut self, wrt: &mut W) -> io::Result<usize> {
-        if self.len() == 0 {
+        if self.is_empty() {
             return Ok(0);
         }
 
@@ -1102,7 +1102,7 @@ impl Buffer {
     /// If the count returned by `wrt.write()` would cause the head cursor to overflow or pass
     /// the tail cursor if added to it.
     pub fn write_max<W: Write + ?Sized>(&mut self, mut max: usize, wrt: &mut W) -> io::Result<()> {
-        while self.len() > 0 && max > 0 {
+        while !self.is_empty() && max > 0 {
             let len = cmp::min(self.len(), max);
             let n = match wrt.write(&self.buf()[..len]) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero,
@@ -1125,7 +1125,7 @@ impl Buffer {
     /// ### Panics
     /// If `self.write_to(wrt)` panics.
     pub fn write_all<W: Write + ?Sized>(&mut self, wrt: &mut W) -> io::Result<()> {
-        while self.len() > 0 {
+        while !self.is_empty() {
             match self.write_to(wrt) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::WriteZero,
                                                    "Buffer::write_all() got zero-sized write")),
@@ -1182,6 +1182,12 @@ impl Buffer {
     }
 }
 
+impl Default for Buffer {
+    fn default() -> Self {
+        Buffer::new()
+    }
+}
+
 impl fmt::Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("buf_redux::Buffer")
@@ -1201,7 +1207,7 @@ pub struct Unbuffer<R> {
 impl<R> Unbuffer<R> {
     /// Returns `true` if the buffer still has some bytes left, `false` otherwise.
     pub fn is_buf_empty(&self) -> bool {
-        !self.buf.is_some()
+        self.buf.is_none()
     }
 
     /// Returns the number of bytes remaining in the buffer.
@@ -1225,7 +1231,7 @@ impl<R: Read> Read for Unbuffer<R> {
         if let Some(ref mut buf) = self.buf.as_mut() {
             let read = buf.copy_to_slice(out);
 
-            if out.len() != 0 && read != 0 {
+            if !out.is_empty() && read != 0 {
                 return Ok(read);
             }
         }
@@ -1270,7 +1276,8 @@ pub fn copy_buf<B: BufRead, W: Write>(b: &mut B, w: &mut W) -> io::Result<u64> {
 }
 
 thread_local!(
-    static DROP_ERR_HANDLER: RefCell<Box<Fn(&mut Write, &mut Buffer, io::Error)>>
+    #[allow(clippy::type_complexity)]
+    static DROP_ERR_HANDLER: RefCell<Box<dyn Fn(&mut dyn Write, &mut Buffer, io::Error)>>
         = RefCell::new(Box::new(|_, _, _| ()))
 );
 
@@ -1283,7 +1290,7 @@ thread_local!(
 /// ### Panics
 /// If called from within a handler previously provided to this function.
 pub fn set_drop_err_handler<F: 'static>(handler: F)
-where F: Fn(&mut Write, &mut Buffer, io::Error)
+where F: Fn(&mut dyn Write, &mut Buffer, io::Error)
 {
     DROP_ERR_HANDLER.with(|deh| *deh.borrow_mut() = Box::new(handler))
 }

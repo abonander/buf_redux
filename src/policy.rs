@@ -55,7 +55,7 @@ pub trait ReaderPolicy {
     /// If the read will ignore the buffer entirely (if the buffer is empty and the amount to be
     /// read matches or exceeds its capacity) or if `BufReader::read_into_buf()` was called to force
     /// a read into the buffer manually, this method will not be called.
-    fn before_read(&mut self, buffer: &mut Buffer) -> DoRead { DoRead(buffer.len() == 0) }
+    fn before_read(&mut self, buffer: &mut Buffer) -> DoRead { DoRead(buffer.is_empty()) }
 
     /// Called after bytes are consumed from the buffer.
     ///
