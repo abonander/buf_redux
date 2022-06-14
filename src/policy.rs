@@ -64,6 +64,23 @@ pub trait ReaderPolicy {
     ///
     /// This is a no-op by default.
     fn after_consume(&mut self, _buffer: &mut Buffer, _amt: usize) {}
+
+    /// Consulted with `read` and `fill_buf` methods.
+    /// Return `bool` to continue (`true`) reading or pause it (`false`).
+    ///
+    /// ### Note
+    /// As soon as it was paused, the current position in the buffer isn't dropped.
+    /// The reader still can continue reading with the next iteration if the flag will
+    /// be changed again to `true`.
+    ///
+    /// Possible use-case. For example, we have a huge file, which we would like to
+    /// read and somehow manipulate with content (search in it for example). If we
+    /// are passing the reader into the searcher, we are losing control of it. Withing
+    /// `pausing` policy we can pass to a reader some kind of token and keep control
+    /// of the reading process.
+    fn is_paused(&mut self) -> bool {
+        false
+    }
 }
 
 /// Behavior of `std::io::BufReader`: the buffer will only be read into if it is empty.

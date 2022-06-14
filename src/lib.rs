@@ -357,6 +357,11 @@ impl<R, P: ReaderPolicy> BufReader<R, P> {
     fn should_read(&mut self) -> bool {
         self.policy.before_read(&mut self.buf).0
     }
+
+    #[inline]
+    fn is_paused(&mut self) -> bool {
+        self.policy.is_paused()
+    }
 }
 
 impl<R: Read, P> BufReader<R, P> {
@@ -383,6 +388,10 @@ impl<R: Read, P> BufReader<R, P> {
 
 impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // If reading is paused, returning 0 to send end reading signal
+        if self.is_paused() {
+            return Ok(0);
+        }
         // If we don't have any buffered data and we're doing a read matching
         // or exceeding the internal buffer's capacity, bypass the buffer.
         if self.buf.is_empty() && out.len() >= self.buf.capacity() {
@@ -397,6 +406,10 @@ impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
 
 impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        // If reading is paused, we are sending empty buffer to send signal - "no data any more"
+        if self.is_paused() {
+            return Ok(&[][..]);
+        }
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
         // This execution order is important; the policy may want to resize the buffer or move data
