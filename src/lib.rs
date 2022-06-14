@@ -203,6 +203,9 @@ pub struct BufReader<R, P = StdPolicy>{
     buf: Buffer,
     inner: R,
     policy: P,
+    // We need field "empty" to return empty &[u8] in case of reader is paused
+    // This field is never used, never filled.
+    empty: Vec<u8>,
 }
 
 impl<R> BufReader<R, StdPolicy> {
@@ -262,7 +265,7 @@ impl<R> BufReader<R, StdPolicy> {
     /// then it will be returned in `read()` and `fill_buf()` ahead of any data from `inner`.
     pub fn with_buffer(buf: Buffer, inner: R) -> Self {
         BufReader {
-            buf, inner, policy: StdPolicy
+            buf, inner, policy: StdPolicy, empty: vec![]
         }
     }
 }
@@ -273,6 +276,7 @@ impl<R, P> BufReader<R, P> {
         BufReader {
             inner: self.inner,
             buf: self.buf,
+            empty: self.empty,
             policy
         }
     }
@@ -357,6 +361,11 @@ impl<R, P: ReaderPolicy> BufReader<R, P> {
     fn should_read(&mut self) -> bool {
         self.policy.before_read(&mut self.buf).0
     }
+
+    #[inline]
+    fn is_paused(&mut self) -> bool {
+        self.policy.is_paused()
+    }
 }
 
 impl<R: Read, P> BufReader<R, P> {
@@ -377,12 +386,17 @@ impl<R: Read, P> BufReader<R, P> {
             inner,
             buf: self.buf,
             policy: self.policy,
+            empty: self.empty,
         }
     }
 }
 
 impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        // If reading is paused, returning 0 to send end reading signal
+        if self.is_paused() {
+            return Ok(0);
+        }
         // If we don't have any buffered data and we're doing a read matching
         // or exceeding the internal buffer's capacity, bypass the buffer.
         if self.buf.is_empty() && out.len() >= self.buf.capacity() {
@@ -397,6 +411,10 @@ impl<R: Read, P: ReaderPolicy> Read for BufReader<R, P> {
 
 impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        // If reading is paused, we are sending empty buffer to send signal - "no data any more"
+        if self.is_paused() {
+            return Ok(&self.empty);
+        }
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
         // This execution order is important; the policy may want to resize the buffer or move data
