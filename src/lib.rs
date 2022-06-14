@@ -203,9 +203,6 @@ pub struct BufReader<R, P = StdPolicy>{
     buf: Buffer,
     inner: R,
     policy: P,
-    // We need field "empty" to return empty &[u8] in case of reader is paused
-    // This field is never used, never filled.
-    empty: Vec<u8>,
 }
 
 impl<R> BufReader<R, StdPolicy> {
@@ -265,7 +262,7 @@ impl<R> BufReader<R, StdPolicy> {
     /// then it will be returned in `read()` and `fill_buf()` ahead of any data from `inner`.
     pub fn with_buffer(buf: Buffer, inner: R) -> Self {
         BufReader {
-            buf, inner, policy: StdPolicy, empty: vec![]
+            buf, inner, policy: StdPolicy
         }
     }
 }
@@ -276,7 +273,6 @@ impl<R, P> BufReader<R, P> {
         BufReader {
             inner: self.inner,
             buf: self.buf,
-            empty: self.empty,
             policy
         }
     }
@@ -386,7 +382,6 @@ impl<R: Read, P> BufReader<R, P> {
             inner,
             buf: self.buf,
             policy: self.policy,
-            empty: self.empty,
         }
     }
 }
@@ -413,7 +408,7 @@ impl<R: Read, P: ReaderPolicy> BufRead for BufReader<R, P> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         // If reading is paused, we are sending empty buffer to send signal - "no data any more"
         if self.is_paused() {
-            return Ok(&self.empty);
+            return Ok(&[][..]);
         }
         // If we've reached the end of our internal buffer then we need to fetch
         // some more data from the underlying reader.
