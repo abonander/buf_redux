@@ -148,8 +148,8 @@ mod impl_ {
 
             buf.reserve_exact(additional);
 
+            let new_cap = buf.capacity();
             unsafe {
-                let new_cap = buf.capacity();
                 buf.set_len(new_cap);
             }
 

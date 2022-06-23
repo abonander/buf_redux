@@ -70,12 +70,12 @@ impl SliceDequeBuf {
     }
 
     pub fn consume(&mut self, amt: usize) {
+        let offset = cmp::min(amt, self.len()) as isize;
+        if offset < 0 {
+            panic!("BufImpl.consume() arg overflowed isize: {:x}", amt)
+        }
         unsafe {
-            let offset = cmp::min(amt, self.len()) as isize;
 
-            if offset < 0 {
-                panic!("BufImpl.consume() arg overflowed isize: {:x}", amt)
-            }
 
             self.deque.move_head(offset);
         }
