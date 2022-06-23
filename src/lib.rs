@@ -1038,10 +1038,10 @@ impl Buffer {
 
         let cap = self.capacity();
         if self.zeroed < cap {
-            unsafe {
-                let buf = self.buf.write_buf();
+            
+                let buf = unsafe { self.buf.write_buf() };
                 init_buffer(&rdr, buf);
-            }
+            
 
             self.zeroed = cap;
         }
@@ -1064,8 +1064,8 @@ impl Buffer {
     /// it will fill the usable space and return the number of bytes copied. If there is no usable
     /// space, this returns 0.
     pub fn copy_from_slice(&mut self, src: &[u8]) -> usize {
-        let len = unsafe {
-            let mut buf = self.buf.write_buf();
+        let len = {
+            let mut buf = unsafe { self.buf.write_buf() };
             let len = cmp::min(buf.len(), src.len());
             buf[..len].copy_from_slice(&src[..len]);
             len
